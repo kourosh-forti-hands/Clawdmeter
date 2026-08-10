@@ -55,17 +55,38 @@ vsync polarity 0, front porch 13, pulse width 3, back porch 32;
 Module: ESP32-S3R8 — 16 MB quad flash, 8 MB octal PSRAM.
 
 **CH422G IO expander.** An unusual part: it has no register pointer, so each
-I²C *address* is itself a register.
+I²C *address* is itself a register. Register map confirmed against two
+independent implementations that agree exactly — Espressif's
+`ESP32_IO_Expander/src/port/esp_io_expander_ch422g.c` and ESPHome's
+`components/ch422g/ch422g.cpp`. Espressif writes them as the datasheet's 8-bit
+addresses shifted right by one, which explains the otherwise arbitrary-looking
+values.
 
-| Address | Purpose |
-|---|---|
-| `0x24` | mode/config (`0x01` = outputs on pins 0–7, `0x04` = open-drain on 8–11) |
-| `0x38` | write outputs 0–7 |
-| `0x23` | write open-drain outputs 8–11 |
-| `0x26` | read inputs |
+| 7-bit address | Datasheet | Purpose |
+|---|---|---|
+| `0x24` | `0x48 >> 1` | `WR_SET` — mode/config |
+| `0x38` | `0x70 >> 1` | `WR_IO` — write outputs IO0–IO7 |
+| `0x23` | `0x46 >> 1` | `WR_OC` — write open-drain outputs OC0–OC3 |
+| `0x26` | `0x4D >> 1` | `RD_IO` — read inputs |
+
+`WR_SET` bit layout: bit 0 `IO_OE` (enable IO0–7 as outputs), bit 1 `A_SCAN`,
+bit 2 `OD_EN` (open-drain), bit 3 `SLEEP`.
+
+**Bit mapping:** the chip exposes 12 IOs — **IO0–IO7 are bits 0–7 of `WR_IO`**
+and OC0–OC3 are bits 0–3 of `WR_OC`. Waveshare's EXIO*n* therefore corresponds
+to bit *n* of register `0x38`.
 
 Expander pin assignments: **EXIO1** = touch reset, **EXIO2** = backlight /
 `DISP` enable, **EXIO4** = SD card CS, **EXIO5** = USB/CAN select.
+
+Two power-on defaults matter for `board_init()`:
+
+- `WR_SET` defaults to `0x01`, so **IO0–7 are already outputs** at power-up.
+  Writing `0x01` in `ch422g_init()` is belt-and-braces, not load-bearing.
+- `WR_IO` defaults to `0xFF` — **all pins HIGH**. The backlight comes up on,
+  and the GT911 boots *out* of reset. The touch reset pulse must therefore
+  actively drive EXIO1 low before releasing it; an implementation that only
+  "releases reset" would silently never reset the controller.
 
 **Absent hardware:** no PMU, no battery voltage ADC (the PH2.0 connector is
 charge-only from the firmware's perspective), no IMU, no audio codec.
@@ -95,16 +116,25 @@ write bandwidth, about 1.6 ms, comfortably inside LVGL's render budget.
 Rejected alternatives:
 
 - **DIRECT render mode**, with LVGL drawing straight into the panel
-  framebuffer. Zero-copy and faster, but it requires `main.cpp` to call
-  `lv_display_set_buffers(..., LV_DISPLAY_RENDER_MODE_DIRECT)` with a pointer
-  the board owns, which means a new HAL entry point and an edit to shared code
-  — breaking the porting contract for a latency win this workload (roughly 1 Hz
-  data updates) does not need.
+  framebuffer. Zero-copy and faster, and entirely practical —
+  `Arduino_ESP32RGBPanel` exposes `uint16_t *getFrameBuffer(int16_t w, int16_t
+  h)`, so obtaining the pointer is trivial. It is rejected purely on the
+  porting contract: `main.cpp` would have to call `lv_display_set_buffers(...,
+  LV_DISPLAY_RENDER_MODE_DIRECT)` with a board-owned pointer, which means a new
+  HAL entry point and an edit to shared code. Not worth it for a latency win
+  this workload (roughly 1 Hz data updates) does not need.
 - **Double-buffered page flipping.** Best tearing behaviour, but another 768 KB
   of PSRAM and a larger HAL change.
 
 If tearing appears on hardware, the first remedy is
 `Arduino_ESP32RGBPanel`'s `bounce_buffer_size_px` argument, not a redesign.
+**Confirmed present at v1.6.4** as the final constructor parameter (default 0),
+following `useBigEndian`, `de_idle_high` and `pclk_idle_high`.
+
+Verified API at v1.6.4: `Arduino_RGB_Display(int16_t w, int16_t h,
+Arduino_ESP32RGBPanel *rgbpanel, uint8_t r = 0, bool auto_flush = true, ...)`,
+with `draw16bitRGBBitmap()` as an override — so the HAL surface maps onto it
+unchanged.
 
 ### Memory budget (8 MB PSRAM)
 
@@ -290,19 +320,47 @@ and show noise rather than crash.
   AMOLED-2.06 and C6 1.8 ports.
 - Rotation — fixed landscape orientation, no IMU.
 
-## To verify at first bring-up
+## Bring-up ladder
 
-These are known-uncertain and each has a defined next action, rather than being
-open questions blocking the design:
+Implementation is ordered so the riskiest, most blocking facts are established
+first, each rung with an unambiguous pass/fail, and nothing above a rung is
+written until it passes. This follows the precedent recorded in `CLAUDE.md` for
+the C6 1.8 port, whose pins were established with temporary GPIO/IRQ scans and a
+since-deleted `iox` serial command because the published pin data was partly
+wrong.
 
-1. **CH422G EXIO numbering.** Whether EXIO1/EXIO2 map to output bits 1 and 2 of
-   register `0x38` or are offset by one. Action: at bring-up, walk the output
-   bits one at a time and observe which toggles the backlight.
-2. **GT911 address selection timing.** If 0x5D does not ACK, retry with INT
+| Rung | Instrumentation | Establishes |
+|---|---|---|
+| 1 | I²C scan in `board_init()`, printing every ACKing address | CH422G present, GT911 at 0x5D vs 0x14 — before a single pixel |
+| 2 | temporary serial command walking each `WR_IO` output bit | EXIO numbering, confirming the register map read from source |
+| 3 | `display_hal_fill_screen` with red / green / blue | pin map and timings. Wrong colours localise the fault to one channel's pins |
+| 4 | raw touch x/y printed on tap | axis swap/mirror and the hot-corner geometry |
+| 5 | normal boot: LVGL + splash | framebuffer sizing, tearing, render performance |
+| 6 | macOS daemon connect | end to end |
+
+Rung 3 is the target to reach fastest: it needs only `board.h`, `ch422g.{h,cpp}`,
+`board_init.cpp` and `display.cpp`, with every other HAL file a stub. The
+two-column layout is not written until the panel lights up, because layout work
+is worthless if the pin map is wrong. All temporary instrumentation is removed
+before the port is considered complete.
+
+## Residual risks
+
+Each has a defined next action rather than being an open question. The first two
+listed in earlier drafts (CH422G register map, whether `bounce_buffer_size_px`
+exists) were retired by reading source and are now recorded as verified facts
+above.
+
+1. **GT911 address selection.** If 0x5D does not ACK at rung 1, retry with INT
    held high (address 0x14) before assuming a wiring fault.
-3. **Tearing.** If visible, add `bounce_buffer_size_px` to the
-   `Arduino_ESP32RGBPanel` constructor.
-4. **Backlight current draw.** If the board brownouts or reset-loops during
+2. **EXIO bit mapping.** Two independent drivers agree that EXIO*n* is bit *n*
+   of `0x38`, so this is expected to hold; rung 2 confirms it cheaply rather
+   than trusting the inference.
+3. **Tearing.** Perceptual, hardware-only. If visible, pass a non-zero
+   `bounce_buffer_size_px` to the `Arduino_ESP32RGBPanel` constructor.
+4. **Splash banding on a brightness change.** Perceptual, hardware-only.
+   Fallback is to force full brightness whenever `splash_is_active()`.
+5. **Backlight current draw.** If the board brownouts or reset-loops during
    bring-up on a laptop USB port, retry on a 1 A+ supply before suspecting
    firmware.
 
