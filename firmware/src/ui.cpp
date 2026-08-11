@@ -198,7 +198,8 @@ static void compute_layout(const BoardCaps& c) {
     L.softbtn_w    = 200;
     L.softbtn_h    = 72;
     L.softbtn_gap  = 24;
-    L.softbtn_y    = -28;
+    // Raised clear of the status line, which sits at anim_y from the bottom.
+    L.softbtn_y    = -60;
     L.softbtn_font = &font_styrene_28;
 }
 
@@ -615,11 +616,20 @@ static void init_usage_screen(lv_obj_t* scr) {
     // visible across the pairing / idle / usage view states — the HID link is
     // a separate BLE connection from the daemon's, so PTT works even when no
     // usage data is flowing.
+    //
+    // Centred as a pair rather than pinned to the left and right edges. Edge
+    // pinning is a portrait-screen habit and here it put TALK at x 20..220,
+    // straight through the board's PWR hot corner (x < 72) — and because
+    // touch_hal_read() hides that corner from LVGL, TALK's left third would
+    // have been silently dead, cycling brightness instead of sending Space.
+    // Centred, the pair spans x 188..612 on an 800 px panel, clear of both
+    // corners by a wide margin.
     if (L.soft_buttons) {
-        make_soft_button(usage_container, "TALK", LV_ALIGN_BOTTOM_LEFT,
-                         L.margin, soft_talk_cb);
-        make_soft_button(usage_container, "MODE", LV_ALIGN_BOTTOM_RIGHT,
-                         -L.margin, soft_mode_cb);
+        const int16_t dx = (int16_t)((L.softbtn_w + L.softbtn_gap) / 2);
+        make_soft_button(usage_container, "TALK", LV_ALIGN_BOTTOM_MID,
+                         (int16_t)-dx, soft_talk_cb);
+        make_soft_button(usage_container, "MODE", LV_ALIGN_BOTTOM_MID,
+                         dx, soft_mode_cb);
     }
 }
 
