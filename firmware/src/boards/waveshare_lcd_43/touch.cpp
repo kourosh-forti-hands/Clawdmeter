@@ -8,22 +8,42 @@
 // Minimal GT911 reader, vendored to keep the dependency tree copyleft-free.
 // The GT911 uses 16-bit register addresses (high byte first), unlike the
 // 8-bit FocalTech-style controllers on the other ports:
-//   0x814E  status  — bit7 = buffer ready, low nibble = touch count
-//   0x8150  point 1 — track id, x lo, x hi, y lo, y hi, size lo, size hi, rsv
+//   0x814E  status       — bit7 = buffer ready, low nibble = touch count
+//   0x814F  track id     — point 1's id; NOT read here
+//   0x8150  point 1 data — x lo, x hi, y lo, y hi, size lo, size hi
+//
+// Note the track id sits at 0x814F, so 0x8150 is ALREADY the x low byte.
+// Reading it as though 0x8150 were the track id shifts every field one byte
+// and makes the *size* field masquerade as y's high byte, which reports y in
+// the thousands on a 480 px panel — verified the hard way on hardware.
+//
 // The status register MUST be zeroed after each read or the controller stops
 // reporting new points.
 //
 // The board is mounted landscape with no rotation, and the GT911 reports in
-// panel-native orientation, so no axis swap or mirror is applied.
+// panel-native orientation, so no axis swap or mirror is applied — confirmed
+// on hardware with taps at three known positions (56,60 / 410,251 / 737,447).
 
-static volatile bool touch_data_ready = false;
+// Polled, NOT interrupt-driven — deliberately different from every other port.
+//
+// attachInterrupt() installs the GPIO ISR service by running esp_intr_alloc()
+// on the ipc1 task, whose stack is ~1 KB. This board's RGB panel fires a
+// bounce-buffer refill interrupt continuously, so an interrupt reliably lands
+// while that call is inside heap_caps_malloc(); the CPU then pushes the
+// interrupted context onto the tiny ipc stack and trips its canary:
+//
+//   Guru Meditation Error: Core 1 panic'ed (Unhandled debug exception)
+//   Debug exception reason: Stack canary watchpoint triggered (ipc1)
+//
+// Polling removes the ISR install entirely. A status read is a single ~150 us
+// I2C transaction, far inside the HAL's "well under 5 ms" budget, and at
+// TOUCH_POLL_MS the controller is sampled faster than the panel refreshes.
+#define TOUCH_POLL_MS 8
+
 static bool     raw_pressed = false;
 static uint16_t raw_x = 0;
 static uint16_t raw_y = 0;
-
-static void IRAM_ATTR touch_isr(void) {
-    touch_data_ready = true;
-}
+static uint32_t last_poll_ms = 0;
 
 static bool gt911_read(uint16_t reg, uint8_t* buf, uint8_t len) {
     Wire.beginTransmission(GT911_ADDR);
@@ -52,10 +72,11 @@ static void touch_pump(void) {
     if (count == 0 || count > 5) {
         raw_pressed = false;
     } else {
-        uint8_t p[8];
+        uint8_t p[6];
         if (gt911_read(GT911_REG_POINT1, p, sizeof(p))) {
-            raw_x = (uint16_t)(p[1] | ((uint16_t)p[2] << 8));
-            raw_y = (uint16_t)(p[3] | ((uint16_t)p[4] << 8));
+            raw_x = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+            raw_y = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
+            // p[4..5] is touch size — deliberately unused.
             raw_pressed = true;
         }
     }
@@ -73,18 +94,18 @@ void touch_hal_init(void) {
         Serial.printf("Touch GT911 ID read FAILED (addr 0x%02X)\n", GT911_ADDR);
     }
 
+    // INT is left as a plain input: the controller drives it per report, but
+    // we never attach an ISR to it (see the note at the top of this file).
     pinMode(TP_INT, INPUT_PULLUP);
-    attachInterrupt(TP_INT, touch_isr, FALLING);
-    Serial.println("Touch attached on INT pin");
+    Serial.printf("Touch polled every %u ms (no ISR)\n", (unsigned)TOUCH_POLL_MS);
 }
 
 void touch_raw_read(uint16_t* x, uint16_t* y, bool* pressed) {
-    if (touch_data_ready) {
-        touch_data_ready = false;
-        touch_pump();
-    } else if (raw_pressed) {
-        // The finger-up report can land between polls; re-read while we think
-        // we are pressed so a stuck "pressed" state clears.
+    // Rate-limited so the two callers per loop (power_hal_tick and LVGL's
+    // indev read) share one sample instead of doubling the I2C traffic.
+    uint32_t now = millis();
+    if ((uint32_t)(now - last_poll_ms) >= TOUCH_POLL_MS) {
+        last_poll_ms = now;
         touch_pump();
     }
     *x = raw_x;

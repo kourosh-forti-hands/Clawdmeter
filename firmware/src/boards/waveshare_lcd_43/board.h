@@ -93,6 +93,8 @@
 #define GT911_ADDR_ALT       0x14
 #define GT911_REG_PRODUCT_ID 0x8140
 #define GT911_REG_STATUS     0x814E
+// 0x814F is point 1's track id; 0x8150 is already the x LOW byte, so the
+// record read from here is x_lo, x_hi, y_lo, y_hi, size_lo, size_hi.
 #define GT911_REG_POINT1     0x8150
 
 // ---- Virtual PWR button ----
