@@ -214,12 +214,12 @@ static void compute_layout(const BoardCaps& c) {
         // Gauge centred in the panel with its text stacked underneath. Beside
         // the dial does not work at this panel width — "Under pace - 63% of 7d
         // gone" is wider than the 200 px that would be left over.
-        L.content_y     = 88;
-        L.usage_panel_h = 238;
-        L.arc_size      = 110;
-        L.usage_reset_y = 150;       // below the gauge, centred
-        L.detail_y      = 178;
-        L.anim_y        = -112;      // status line clears the buttons
+        L.content_y     = 84;
+        L.usage_panel_h = 266;
+        L.arc_size      = 180;       // the dial is the hero, not a decoration
+        L.pct_font      = &font_tiempos_56;
+        L.usage_reset_y = 216;       // below the gauge, centred
+        L.anim_y        = -95;       // status line clears the buttons
         L.detail_font   = &font_styrene_20;
         L.footer_font   = &font_styrene_16;
         L.footer_y      = 0;         // footer suppressed; System page carries it
@@ -236,7 +236,7 @@ static void compute_layout(const BoardCaps& c) {
     // cannot be read. Gated on the runtime capability, never on board name.
     L.soft_buttons = (c.button_count == 0);
     L.softbtn_w    = 200;
-    L.softbtn_h    = 72;
+    L.softbtn_h    = L.rich_info ? 60 : 72;
     L.softbtn_gap  = 24;
     // Raised clear of the status line, which sits at anim_y from the bottom.
     L.softbtn_y    = L.rich_info ? -20 : -68;
@@ -284,6 +284,10 @@ static lv_obj_t* system_container = nullptr;
 // Two columns of key/value rows per page, refreshed in place so the pages cost
 // no allocation after ui_init.
 #define PAGE_ROWS 12
+// First row / chart top on the extra pages. Clears the title (which runs to
+// roughly y=86 at title_font) rather than reusing the usage page's content_y,
+// which is tuned around the gauges and sits high enough to cut the descenders.
+#define PAGE_TOP 100
 static lv_obj_t* limits_rows[PAGE_ROWS] = {nullptr};
 // History chart. LVGL's shift update mode owns the ring buffer, so there's no
 // separate sample array to keep in step — one push per payload and the oldest
@@ -439,7 +443,10 @@ static void format_pace_detail(float used_pct, int remaining_mins, int window_mi
     else if (window_mins % 60 == 0) snprintf(wlabel, sizeof(wlabel), "%dh", window_mins / 60);
     else                            snprintf(wlabel, sizeof(wlabel), "%dm", window_mins);
 
-    snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
+    // Inside a dial there is only room for the verdict; the elapsed figure it
+    // is derived from lives on the History page beside burn rate.
+    if (L.rich_info) snprintf(buf, len, "#%s %s#", hex, verdict);
+    else             snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
 }
 
 // Gauge tint by pace rather than absolute level. Window length comes from the
@@ -554,7 +561,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
         // The bar is not created at all here, so every bar call site is guarded.
         lv_obj_t* arc = lv_arc_create(panel);
         lv_obj_set_size(arc, L.arc_size, L.arc_size);
-        lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 36);   // below the caption
+        lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 32);   // below the caption
         lv_arc_set_range(arc, 0, 100);
         lv_arc_set_value(arc, 0);
         lv_arc_set_bg_angles(arc, 135, 45);   // 270-degree sweep, gap at the bottom
@@ -573,7 +580,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
         lv_label_set_text(*out_pct, "--%");
         lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
         lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
-        lv_obj_center(*out_pct);
+        lv_obj_align(*out_pct, LV_ALIGN_CENTER, 0, -14);   // room for the verdict below
 
         *out_bar = nullptr;
         *out_arc = arc;
@@ -713,6 +720,9 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
     lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    // Clearing SCROLLABLE stops scrolling but LVGL still renders the bar,
+    // which shows as a stray hairline across the bottom of the page.
+    lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(page, global_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
 
@@ -723,15 +733,20 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
     lv_obj_align(t, LV_ALIGN_TOP_MID, L.title_nudge, L.title_y);
 
     // Two columns; rows fill the left column first, then the right.
+    // PAGE_TOP is independent of the usage page's content_y — that value is
+    // tuned around the gauges and sits high enough to clip this title.
     const int16_t col_w   = (L.scr_w - 2 * L.margin - L.usage_panel_gap) / 2;
     const int16_t row_h   = 34;
-    const int16_t rows_y  = L.content_y;
+    const int16_t rows_y  = PAGE_TOP;
     const int16_t per_col = (PAGE_ROWS + 1) / 2;
     for (int i = 0; i < PAGE_ROWS; ++i) {
         lv_obj_t* r = lv_label_create(page);
         lv_label_set_recolor(r, true);
         lv_label_set_text(r, "");
-        lv_obj_set_style_text_font(r, L.detail_font, 0);
+        // Smaller than the usage page's detail font: these rows carry long
+        // API-sourced values like "rejected (org level disabled)" that reach
+        // the panel edge at 20 px.
+        lv_obj_set_style_text_font(r, &font_styrene_16, 0);
         lv_obj_set_style_text_color(r, COL_DIM, 0);
         const bool right = (i >= per_col);
         const int16_t x = L.margin + (right ? (col_w + L.usage_panel_gap) : 0);
@@ -815,19 +830,22 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Rich-info extras: a pace/detail line inside each panel and a footer strip.
     // Recolor is on so the pace verdict can be tinted without extra widgets.
     if (L.rich_info) {
-        lbl_session_detail = lv_label_create(panel_session);
+        // The pace verdict lives INSIDE the dial, under the percentage. The
+        // gauge then labels itself — number, verdict and colour in one glance —
+        // instead of competing with a caption line underneath it.
+        lbl_session_detail = lv_label_create(arc_session);
         lv_label_set_recolor(lbl_session_detail, true);
         lv_label_set_text(lbl_session_detail, "");
-        lv_obj_set_style_text_font(lbl_session_detail, L.detail_font, 0);
+        lv_obj_set_style_text_font(lbl_session_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_session_detail, COL_DIM, 0);
-        lv_obj_align(lbl_session_detail, LV_ALIGN_TOP_MID, 0, L.detail_y);
+        lv_obj_align(lbl_session_detail, LV_ALIGN_CENTER, 0, 30);
 
-        lbl_weekly_detail = lv_label_create(panel_weekly);
+        lbl_weekly_detail = lv_label_create(arc_weekly);
         lv_label_set_recolor(lbl_weekly_detail, true);
         lv_label_set_text(lbl_weekly_detail, "");
-        lv_obj_set_style_text_font(lbl_weekly_detail, L.detail_font, 0);
+        lv_obj_set_style_text_font(lbl_weekly_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_weekly_detail, COL_DIM, 0);
-        lv_obj_align(lbl_weekly_detail, LV_ALIGN_TOP_MID, 0, L.detail_y);
+        lv_obj_align(lbl_weekly_detail, LV_ALIGN_CENTER, 0, 30);
 
         // Footer strip: account tier, API status, and data freshness. Lives on
         // usage_group so it hides with the panels when the link drops — stale
@@ -906,7 +924,7 @@ void ui_init(void) {
         // which is the thing a single number genuinely cannot show.
         hist_chart = lv_chart_create(limits_container);
         lv_obj_set_size(hist_chart, L.scr_w - 2 * L.margin, 200);
-        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, L.content_y - 8);
+        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, PAGE_TOP);
         lv_chart_set_type(hist_chart, LV_CHART_TYPE_LINE);
         lv_chart_set_point_count(hist_chart, HIST_POINTS);
         lv_chart_set_range(hist_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
@@ -918,6 +936,7 @@ void ui_init(void) {
         lv_obj_set_style_line_color(hist_chart, COL_BAR_BG, LV_PART_MAIN);
         lv_obj_set_style_size(hist_chart, 0, 0, LV_PART_INDICATOR);  // line only, no dots
         lv_obj_clear_flag(hist_chart, LV_OBJ_FLAG_CLICKABLE);        // taps page forward
+        lv_obj_set_scrollbar_mode(hist_chart, LV_SCROLLBAR_MODE_OFF);
         hist_session_ser = lv_chart_add_series(hist_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
         hist_weekly_ser  = lv_chart_add_series(hist_chart, COL_GREEN,  LV_CHART_AXIS_PRIMARY_Y);
 
@@ -938,7 +957,7 @@ void ui_init(void) {
             if (i < 4) {
                 lv_obj_set_pos(limits_rows[i],
                                L.margin + (i >= 2 ? half : 0),
-                               300 + (i % 2) * 34);
+                               PAGE_TOP + 216 + (i % 2) * 34);
             } else {
                 lv_obj_add_flag(limits_rows[i], LV_OBJ_FLAG_HIDDEN);
             }
@@ -1148,8 +1167,16 @@ static void refresh_pages(void) {
         set_row(limits_rows[2], "Binding", d->claim[0] ? d->claim : "unknown");
 
         if (d->overage[0]) {
-            if (d->overage_reason[0]) snprintf(v, sizeof(v), "%s (%s)", d->overage, d->overage_reason);
-            else                       snprintf(v, sizeof(v), "%s", d->overage);
+            if (d->overage_reason[0]) {
+                // API reasons arrive snake_cased ("org_level_disabled");
+                // humanise rather than reformat upstream's value.
+                char reason[24];
+                strlcpy(reason, d->overage_reason, sizeof(reason));
+                for (char* p = reason; *p; ++p) if (*p == '_') *p = ' ';
+                snprintf(v, sizeof(v), "%s (%s)", d->overage, reason);
+            } else {
+                snprintf(v, sizeof(v), "%s", d->overage);
+            }
         } else snprintf(v, sizeof(v), "not reported");
         set_row(limits_rows[3], "Overage", v);
     }
