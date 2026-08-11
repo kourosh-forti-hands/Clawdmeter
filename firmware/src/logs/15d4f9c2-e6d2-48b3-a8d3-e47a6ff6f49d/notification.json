@@ -1,0 +1,44 @@
+[
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "title": ""
+  },
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "title": ""
+  },
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "title": ""
+  },
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "title": ""
+  },
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "title": ""
+  },
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "Notification",
+    "notification_type": "idle_prompt",
+    "message": "Claude is waiting for your input",
+    "title": ""
+  }
+]

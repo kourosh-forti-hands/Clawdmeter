@@ -1,0 +1,10 @@
+[
+  {
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_id": "a41e59b0c4935f69b",
+    "agent_type": "",
+    "agent_transcript_path": "/Users/kourosh/.claude/projects/-Users-kourosh-PycharmProjects-Clawdmeter/15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d/subagents/agent-a41e59b0c4935f69b.jsonl"
+  }
+]

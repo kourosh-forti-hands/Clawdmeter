@@ -1,0 +1,30 @@
+[
+  {
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_01B7M5MM5Uzm9L6prxt4Q6pt",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_01AmAXbJw21bxVM2GJ6jVtgA",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_01MrvQwzt5wm4Cjvqf9ZoNNU",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01MRVbuR2csBCZ5NM8QHaJNM",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  }
+]
