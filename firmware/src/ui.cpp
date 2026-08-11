@@ -32,6 +32,13 @@ struct Layout {
     int16_t content_w;
     UsageSlots slots;                // panel placement (stacked or two-column)
 
+    // On-screen HID controls, for boards with no readable physical button
+    bool    soft_buttons;
+    int16_t softbtn_w, softbtn_h;
+    int16_t softbtn_y;               // offset from the bottom edge (negative)
+    int16_t softbtn_gap;
+    const lv_font_t* softbtn_font;
+
     // Usage screen
     int16_t usage_panel_h;
     int16_t usage_panel_gap;
@@ -183,6 +190,16 @@ static void compute_layout(const BoardCaps& c) {
     // by test/test_usage_layout/.
     L.slots = usage_compute_slots(L.scr_w, L.scr_h, L.margin, L.content_y,
                                   L.usage_panel_h, L.usage_panel_gap);
+
+    // Boards with no readable physical button get on-screen HID controls.
+    // The LCD-4.3 is the first: GPIO 0 is an RGB data line there, so BOOT
+    // cannot be read. Gated on the runtime capability, never on board name.
+    L.soft_buttons = (c.button_count == 0);
+    L.softbtn_w    = 200;
+    L.softbtn_h    = 72;
+    L.softbtn_gap  = 24;
+    L.softbtn_y    = -28;
+    L.softbtn_font = &font_styrene_28;
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -477,6 +494,52 @@ static void build_idle_group(lv_obj_t* parent) {
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
 }
 
+// ---- On-screen HID controls ----
+// Boards that report button_count == 0 have no readable physical button — the
+// LCD-4.3 is the first, because GPIO 0 is an RGB data line there and so the
+// BOOT strap pin is an LCD output at runtime. These mirror main.cpp's
+// physical-button handling exactly: PTT holds Space for as long as the finger
+// is down, mode-toggle sends Shift+Tab.
+
+static void soft_talk_cb(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(0x2C, 0x00);  // Space
+    else if (code == LV_EVENT_RELEASED) ble_keyboard_release();
+}
+
+static void soft_mode_cb(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(0x2B, 0x02);  // Shift+Tab
+    else if (code == LV_EVENT_RELEASED) ble_keyboard_release();
+}
+
+// Build one pill-shaped control. Not marked EVENT_BUBBLE, so its clicks never
+// reach usage_container's global_click_cb and toggle the splash screen.
+static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
+                                  lv_align_t align, int16_t dx,
+                                  lv_event_cb_t cb) {
+    lv_obj_t* btn = lv_obj_create(parent);
+    lv_obj_set_size(btn, L.softbtn_w, L.softbtn_h);
+    lv_obj_align(btn, align, dx, L.softbtn_y);
+    lv_obj_set_style_bg_color(btn, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_radius(btn, L.softbtn_h / 2, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, L.softbtn_font, 0);
+    lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
+    lv_obj_center(lbl);
+
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_RELEASED, NULL);
+    return btn;
+}
+
 static void init_usage_screen(lv_obj_t* scr) {
     usage_container = lv_obj_create(scr);
     lv_obj_set_size(usage_container, L.scr_w, L.scr_h);
@@ -547,6 +610,17 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_anim, L.anim_font, 0);
     lv_obj_set_style_text_color(lbl_anim, COL_ACCENT, 0);
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+
+    // Attached to usage_container rather than usage_group so they stay
+    // visible across the pairing / idle / usage view states — the HID link is
+    // a separate BLE connection from the daemon's, so PTT works even when no
+    // usage data is flowing.
+    if (L.soft_buttons) {
+        make_soft_button(usage_container, "TALK", LV_ALIGN_BOTTOM_LEFT,
+                         L.margin, soft_talk_cb);
+        make_soft_button(usage_container, "MODE", LV_ALIGN_BOTTOM_RIGHT,
+                         -L.margin, soft_mode_cb);
+    }
 }
 
 // ======== Public API ========
