@@ -1,0 +1,44 @@
+[
+  {
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_016cQk1EvoWvy5jhT46jNo6F",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_013UdCBUWpgofPGxgTFFDNRr",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_01K3y49mLuTqzes6CsGhJPug",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_01PJd6aUCdqsd1ZpBHdDVZx4",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_01JLGL3KWG2PwJYubptY4mpV",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  },
+  {
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_01N3SqaHZBkhy1zNy5aMmc3u",
+    "session_id": "15d4f9c2-e6d2-48b3-a8d3-e47a6ff6f49d",
+    "hook_event_name": "PostToolUse",
+    "is_mcp_tool": false
+  }
+]

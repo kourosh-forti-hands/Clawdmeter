@@ -401,6 +401,33 @@ def add_clock_fields(payload: dict) -> None:
     payload["tf"] = tf
 
 
+# --- ~/.claude.json `oauthAccount` — investigated, deliberately not read ----
+#
+# Checked every field in `oauthAccount` (via `claude.ai/images/clawd`-style
+# live inspection of the actual blob, not docs) for anything worth adding to
+# the payload beyond the rate-limit headers above:
+#
+#   - accountCreatedAt / subscriptionCreatedAt: account/subscription age.
+#     Real dates, not hardcoded — but they're static (never change between
+#     polls) and describe the user's history, not their current usage/quota
+#     state, which is what this device is for. Not added: no quota meaning,
+#     and would need new firmware UI just to show a "member since" date.
+#   - hasExtraUsageEnabled: a boolean toggle for whether the account *can*
+#     spend past quota. This looks useful until you compare it with "ov"/
+#     "ovr" above (anthropic-ratelimit-unified-overage-status/-disabled-
+#     reason), which report the *live, per-request* overage outcome — e.g.
+#     "ovr": "org_level_disabled" already tells the device overage is off
+#     and why. `~/.claude.json` is a locally cached profile snapshot
+#     (`profileFetchedAt` proves it — a point-in-time fetch, not live), so it
+#     can drift stale after an admin flips the org setting; the header is
+#     authoritative and current every poll. Redundant + less trustworthy →
+#     not added.
+#   - seatTier (null) / billingType ("stripe_subscription" only): confirmed
+#     useless for tier detection per the task brief — neither distinguishes
+#     Pro from Max, so never treat either as a plan name.
+#
+# Also confirmed present but intentionally never sent: accountUuid,
+# organizationUuid, emailAddress — this renders on a desk screen.
 async def poll_api(token: str) -> dict | None:
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
@@ -453,6 +480,32 @@ async def poll_api(token: str) -> dict | None:
         n, unit = int(m.group(1)), m.group(2)
         return n * {"m": 1, "h": 60, "d": 1440}[unit]
 
+    def overage_fallback_fields() -> dict:
+        """Overage/fallback fields, shared by both account branches below —
+        these headers showed up on a Pro/Max response alongside the 5h/7d
+        headers (dumped live), so they're not exclusive to either branch;
+        apply them wherever the underlying header is present.
+
+        "ov"  — overage status (e.g. "rejected"), from
+                anthropic-ratelimit-unified-overage-status.
+        "ovr" — why overage is disabled, from
+                anthropic-ratelimit-unified-overage-disabled-reason. Omitted
+                entirely when the header is absent rather than guessing —
+                most responses won't carry a disabled-reason at all.
+        "fb"  — percentage of requests the API is routing to a fallback
+                model, from anthropic-ratelimit-unified-fallback-percentage
+                (a 0..1 float on the wire; sent as an integer percent like
+                the other pct() fields for BLE-payload consistency).
+        """
+        fields = {
+            "ov": hdr("anthropic-ratelimit-unified-overage-status", "unknown"),
+            "fb": pct(hdr("anthropic-ratelimit-unified-fallback-percentage")),
+        }
+        reason = resp.headers.get("anthropic-ratelimit-unified-overage-disabled-reason")
+        if reason:
+            fields["ovr"] = reason
+        return fields
+
     # Pro/Max accounts expose 5h/7d windows; Enterprise/overage use a single
     # spending-limit model reported via overage-utilization.
     if resp.headers.get("anthropic-ratelimit-unified-5h-utilization"):
@@ -462,6 +515,10 @@ async def poll_api(token: str) -> dict | None:
             "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
             "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
             "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
+            # 7d window status — the API has always sent this header
+            # (anthropic-ratelimit-unified-7d-status) but only its 5h sibling
+            # ("st") made it into the payload before now.
+            "ws": hdr("anthropic-ratelimit-unified-7d-status", "unknown"),
             # Window lengths, parsed from the header names above so the device
             # never hardcodes them. See window_minutes().
             "sw": window_minutes("anthropic-ratelimit-unified-5h-reset"),
@@ -474,6 +531,7 @@ async def poll_api(token: str) -> dict | None:
             # means "not an enterprise spending-limit account" and nothing more;
             # the firmware must not render it as a plan name.
             "acct": "pro",
+            **overage_fallback_fields(),
             "ok": True,
         }
     else:
@@ -486,6 +544,10 @@ async def poll_api(token: str) -> dict | None:
             "st": hdr("anthropic-ratelimit-unified-status", "unknown"),
             "acct": "ent",
             **_billing_period_info(now, reset_ts),
+            # No "ws": the Enterprise/overage model has no 7d window (w/wr
+            # above are hardcoded 0 for the same reason) — there's no
+            # ...-7d-status header for this account type to parse.
+            **overage_fallback_fields(),
             "ok": True,
         }
     add_chime_field(payload)   # adds "c":1 iff the config opts in

@@ -285,6 +285,16 @@ static lv_obj_t* system_container = nullptr;
 // no allocation after ui_init.
 #define PAGE_ROWS 12
 static lv_obj_t* limits_rows[PAGE_ROWS] = {nullptr};
+// History chart. LVGL's shift update mode owns the ring buffer, so there's no
+// separate sample array to keep in step — one push per payload and the oldest
+// point falls off the left edge. 120 points at the daemon's 60s cadence is
+// about two hours of shape.
+#define HIST_POINTS 120
+static lv_obj_t*         hist_chart = nullptr;
+static lv_chart_series_t* hist_session_ser = nullptr;
+static lv_chart_series_t* hist_weekly_ser  = nullptr;
+static lv_obj_t*          hist_hint = nullptr;   // "collecting" until a line exists
+static uint16_t           hist_samples = 0;
 static lv_obj_t* system_rows[PAGE_ROWS] = {nullptr};
 // Whole last payload, kept so the Limits page can re-render on its own cadence
 // without the caller having to push data at it.
@@ -888,8 +898,51 @@ void ui_init(void) {
 
     init_usage_screen(scr);
     if (L.rich_info) {
-        limits_container = make_page(scr, "Limits", limits_rows);
+        limits_container = make_page(scr, "History", limits_rows);
         system_container = make_page(scr, "System", system_rows);
+
+        // Trend chart above the stat rows. A percentage tells you where you
+        // are; the shape tells you how you got there and where it's going,
+        // which is the thing a single number genuinely cannot show.
+        hist_chart = lv_chart_create(limits_container);
+        lv_obj_set_size(hist_chart, L.scr_w - 2 * L.margin, 200);
+        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, L.content_y - 8);
+        lv_chart_set_type(hist_chart, LV_CHART_TYPE_LINE);
+        lv_chart_set_point_count(hist_chart, HIST_POINTS);
+        lv_chart_set_range(hist_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+        lv_chart_set_update_mode(hist_chart, LV_CHART_UPDATE_MODE_SHIFT);
+        lv_chart_set_div_line_count(hist_chart, 5, 0);
+        lv_obj_set_style_bg_color(hist_chart, COL_PANEL, 0);
+        lv_obj_set_style_border_width(hist_chart, 0, 0);
+        lv_obj_set_style_radius(hist_chart, 12, 0);
+        lv_obj_set_style_line_color(hist_chart, COL_BAR_BG, LV_PART_MAIN);
+        lv_obj_set_style_size(hist_chart, 0, 0, LV_PART_INDICATOR);  // line only, no dots
+        lv_obj_clear_flag(hist_chart, LV_OBJ_FLAG_CLICKABLE);        // taps page forward
+        hist_session_ser = lv_chart_add_series(hist_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+        hist_weekly_ser  = lv_chart_add_series(hist_chart, COL_GREEN,  LV_CHART_AXIS_PRIMARY_Y);
+
+        // History lives only in RAM, so it restarts at every boot. Say that
+        // plainly rather than seeding the series with the current value — a
+        // flat line would imply hours of history we simply do not have.
+        hist_hint = lv_label_create(limits_container);
+        lv_label_set_text(hist_hint, "collecting - one point per minute");
+        lv_obj_set_style_text_font(hist_hint, L.detail_font, 0);
+        lv_obj_set_style_text_color(hist_hint, COL_DIM, 0);
+        lv_obj_align_to(hist_hint, hist_chart, LV_ALIGN_CENTER, 0, 0);
+
+        // The chart takes the space make_page gave the rows, so re-lay the
+        // first four beneath it (2x2) and hide the rest. Four is deliberate:
+        // these are the figures that say something the chart doesn't.
+        const int16_t half = (L.scr_w - 2 * L.margin) / 2;
+        for (int i = 0; i < PAGE_ROWS; ++i) {
+            if (i < 4) {
+                lv_obj_set_pos(limits_rows[i],
+                               L.margin + (i >= 2 ? half : 0),
+                               300 + (i % 2) * 34);
+            } else {
+                lv_obj_add_flag(limits_rows[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
     }
     splash_init(scr);
 
@@ -1033,6 +1086,14 @@ void ui_update(const UsageData* data) {
     // period box, so the per-panel detail is Pro/Max only; the footer applies
     // to both.
     s_last_data = *data;
+    // One point per payload; LVGL shifts the oldest off the left edge.
+    if (hist_chart) {
+        lv_chart_set_next_value(hist_chart, hist_session_ser, (int32_t)(data->session_pct + 0.5f));
+        lv_chart_set_next_value(hist_chart, hist_weekly_ser,  (int32_t)(data->weekly_pct + 0.5f));
+        if (hist_samples < 0xFFFF) hist_samples++;
+        // Two points make a line; below that the chart has nothing to show.
+        if (hist_hint && hist_samples >= 2) lv_obj_add_flag(hist_hint, LV_OBJ_FLAG_HIDDEN);
+    }
     s_last_enterprise = data->enterprise;
     strlcpy(s_last_status, data->status, sizeof(s_last_status));
     if (lbl_session_detail && !data->enterprise) {
@@ -1068,69 +1129,29 @@ static void refresh_pages(void) {
     char v[64];
     const UsageData* d = &s_last_data;
 
-    // ---- Limits: session on the left, weekly + account state on the right ----
+    // ---- History: four figures the chart itself cannot show ----
     if (d->valid) {
-        // Window label derived from the pulled length, never assumed.
-        char swin[8] = "?";
-        char wwin[8] = "?";
-        if (d->session_window_mins > 0) {
-            if (d->session_window_mins % 60 == 0) snprintf(swin, sizeof(swin), "%dh", d->session_window_mins / 60);
-            else                                  snprintf(swin, sizeof(swin), "%dm", d->session_window_mins);
-        }
-        if (d->weekly_window_mins > 0) {
-            if (d->weekly_window_mins % 1440 == 0) snprintf(wwin, sizeof(wwin), "%dd", d->weekly_window_mins / 1440);
-            else                                    snprintf(wwin, sizeof(wwin), "%dh", d->weekly_window_mins / 60);
-        }
-
-        snprintf(v, sizeof(v), "%d%% used", (int)(d->session_pct + 0.5f));
-        set_row(limits_rows[0], "Session", v);
-
-        format_reset_time(d->session_reset_mins, v, sizeof(v));
-        set_row(limits_rows[1], "Resets", v[0] == 'R' ? v + 7 : v);   // drop "Resets "
-
-        if (d->session_window_mins > 0) {
-            int e = d->session_window_mins - d->session_reset_mins;
-            if (e < 0) e = 0;
-            snprintf(v, sizeof(v), "%d%% of %s", (int)((long)e * 100 / d->session_window_mins), swin);
-        } else snprintf(v, sizeof(v), "window unknown");
-        set_row(limits_rows[2], "Elapsed", v);
-
         const float rate = usage_rate_pct_per_hour();
         if (rate < 0.0f) snprintf(v, sizeof(v), "warming up");
-        else             snprintf(v, sizeof(v), "%d.%d %%/hr", (int)rate, (int)((rate < 0 ? -rate : rate) * 10) % 10);
-        set_row(limits_rows[3], "Burn rate", v);
+        else             snprintf(v, sizeof(v), "%d.%d %%/hr", (int)rate,
+                                  (int)((rate < 0 ? -rate : rate) * 10) % 10);
+        set_row(limits_rows[0], "Burn rate", v);
 
         const int to_full = usage_rate_mins_to_full();
         if (to_full == -1)      snprintf(v, sizeof(v), "warming up");
-        else if (to_full == -2) snprintf(v, sizeof(v), "steady");
-        else if (to_full < 60)  snprintf(v, sizeof(v), "full in %dm", to_full);
-        else                    snprintf(v, sizeof(v), "full in %dh %dm", to_full / 60, to_full % 60);
-        set_row(limits_rows[4], "Projected", v);
+        else if (to_full == -2) snprintf(v, sizeof(v), "steady, not climbing");
+        else if (to_full < 60)  snprintf(v, sizeof(v), "limit in %dm", to_full);
+        else                    snprintf(v, sizeof(v), "limit in %dh %dm", to_full / 60, to_full % 60);
+        set_row(limits_rows[1], "Projected", v);
 
-        set_row(limits_rows[5], "Status", d->status);
-
-        snprintf(v, sizeof(v), "%d%% used", (int)(d->weekly_pct + 0.5f));
-        set_row(limits_rows[6], "Weekly", v);
-
-        format_reset_time(d->weekly_reset_mins, v, sizeof(v));
-        set_row(limits_rows[7], "Resets", v[0] == 'R' ? v + 7 : v);
-
-        if (d->weekly_window_mins > 0) {
-            int e = d->weekly_window_mins - d->weekly_reset_mins;
-            if (e < 0) e = 0;
-            snprintf(v, sizeof(v), "%d%% of %s", (int)((long)e * 100 / d->weekly_window_mins), wwin);
-        } else snprintf(v, sizeof(v), "window unknown");
-        set_row(limits_rows[8], "Elapsed", v);
-
-        set_row(limits_rows[9],  "Weekly st", d->weekly_status[0] ? d->weekly_status : "-");
         // The API's own statement of which window is currently binding.
-        set_row(limits_rows[10], "Binding", d->claim[0] ? d->claim : "unknown");
+        set_row(limits_rows[2], "Binding", d->claim[0] ? d->claim : "unknown");
 
         if (d->overage[0]) {
             if (d->overage_reason[0]) snprintf(v, sizeof(v), "%s (%s)", d->overage, d->overage_reason);
             else                       snprintf(v, sizeof(v), "%s", d->overage);
-        } else snprintf(v, sizeof(v), "-");
-        set_row(limits_rows[11], "Overage", v);
+        } else snprintf(v, sizeof(v), "not reported");
+        set_row(limits_rows[3], "Overage", v);
     }
 
     // ---- System ----
