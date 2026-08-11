@@ -214,12 +214,19 @@ static void compute_layout(const BoardCaps& c) {
         // Gauge centred in the panel with its text stacked underneath. Beside
         // the dial does not work at this panel width — "Under pace - 63% of 7d
         // gone" is wider than the 200 px that would be left over.
-        L.content_y     = 84;
-        L.usage_panel_h = 266;
-        L.arc_size      = 180;       // the dial is the hero, not a decoration
+        // A static word should not be the biggest thing on a data display:
+        // the title drops two steps so the gauges carry the visual weight,
+        // which also buys back 30 px of height for the panels.
+        L.title_font    = &font_tiempos_34;
+        L.title_y       = 18;
+        L.content_y     = 68;
+        L.usage_panel_h = 258;
+        L.arc_size      = 170;       // the dial is the hero, not a decoration
         L.pct_font      = &font_tiempos_56;
-        L.usage_reset_y = 216;       // below the gauge, centred
-        L.anim_y        = -95;       // status line clears the buttons
+        L.usage_reset_y = 202;       // tucked under the gauge, not floating
+        // 154 px sit below the panels: status (30) + buttons (56) leaves 68
+        // for three gaps, so ~23 each rather than 12/34/22.
+        L.anim_y        = -101;
         L.detail_font   = &font_styrene_20;
         L.footer_font   = &font_styrene_16;
         L.footer_y      = 0;         // footer suppressed; System page carries it
@@ -239,7 +246,7 @@ static void compute_layout(const BoardCaps& c) {
     L.softbtn_h    = L.rich_info ? 60 : 72;
     L.softbtn_gap  = 24;
     // Raised clear of the status line, which sits at anim_y from the bottom.
-    L.softbtn_y    = L.rich_info ? -20 : -68;
+    L.softbtn_y    = L.rich_info ? -22 : -68;
     L.softbtn_font = &font_styrene_28;
 }
 
@@ -838,14 +845,14 @@ static void init_usage_screen(lv_obj_t* scr) {
         lv_label_set_text(lbl_session_detail, "");
         lv_obj_set_style_text_font(lbl_session_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_session_detail, COL_DIM, 0);
-        lv_obj_align(lbl_session_detail, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_align(lbl_session_detail, LV_ALIGN_CENTER, 0, 36);
 
         lbl_weekly_detail = lv_label_create(arc_weekly);
         lv_label_set_recolor(lbl_weekly_detail, true);
         lv_label_set_text(lbl_weekly_detail, "");
         lv_obj_set_style_text_font(lbl_weekly_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_weekly_detail, COL_DIM, 0);
-        lv_obj_align(lbl_weekly_detail, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_align(lbl_weekly_detail, LV_ALIGN_CENTER, 0, 36);
 
         // Footer strip: account tier, API status, and data freshness. Lives on
         // usage_group so it hides with the panels when the link drops — stale
