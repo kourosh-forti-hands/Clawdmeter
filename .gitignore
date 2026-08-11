@@ -18,3 +18,6 @@ daemon/.venv/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Host unit-test binaries
+firmware/test/**/t
