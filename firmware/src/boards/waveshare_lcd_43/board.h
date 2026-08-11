@@ -65,12 +65,6 @@
 // verified by A/B on real hardware, 0 vs the value below.
 //
 // 10 lines * 800 px = 16 KB per buffer, 32 KB of internal SRAM total.
-//
-// Note for anyone reading serial logs while changing this: printf output stops
-// arriving partway through setup() on this board regardless of this setting
-// (see the boot-log note in CLAUDE.md). That is a serial-transport quirk, NOT
-// a hang — the firmware runs on, LVGL renders, and the serial command handler
-// still answers. Do not diagnose a hang from silence alone here.
 #define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 10)
 
 // ---- I2C bus (CH422G expander + GT911 touch) ----
