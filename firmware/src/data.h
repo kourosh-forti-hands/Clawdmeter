@@ -11,6 +11,10 @@ struct UsageData {
                              // header naming; 0 = unknown, don't derive a pace
     int weekly_window_mins;  // same for the 7-day window
     char claim[12];          // which window is currently binding ("five_hour")
+    char weekly_status[12];  // 7d window status; "" when the daemon didn't send it
+    char overage[12];        // overage status ("rejected"/"allowed"), "" if absent
+    char overage_reason[24]; // why overage is unavailable, "" if absent
+    int  fallback_pct;       // fallback percentage, -1 when not reported
     bool chime;              // play the session-reset chime; false unless daemon opts in
     bool enterprise;         // true = Enterprise spending-limit account
     int time_pct;            // 0-100: fraction of billing period elapsed (Enterprise)

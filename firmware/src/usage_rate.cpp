@@ -75,3 +75,44 @@ int usage_rate_group(void) {
     if (rate < RATE_THRESH_HEAVY)  return 2;
     return 3;
 }
+
+// Shared by the two projection functions below. Same "do we trust this yet"
+// gate as usage_rate_group() (count >= 2, span >= MIN_WINDOW_MS), but returns
+// the *signed* %/min rate rather than clamping negative deltas to zero —
+// group() clamps because it only ever buckets "how busy", never needs to
+// distinguish a shrinking session from a flat one. Deliberately left
+// out-of-line from usage_rate_group() so that function's behaviour stays
+// byte-for-byte what it was before this file grew a second consumer of the
+// ring buffer.
+static bool usage_rate_compute(float *out_rate_pct_per_min, float *out_latest_pct) {
+    if (count < 2) return false;
+
+    uint8_t o = oldest_idx();
+    uint8_t l = (head + RING_SIZE - 1) % RING_SIZE;
+    uint32_t dt = ring[l].ms - ring[o].ms;
+    if (dt < MIN_WINDOW_MS) return false;
+
+    float dp = ring[l].pct - ring[o].pct;
+    *out_rate_pct_per_min = dp * 60000.0f / (float)dt;
+    *out_latest_pct = ring[l].pct;
+    return true;
+}
+
+float usage_rate_pct_per_hour(void) {
+    float rate_per_min, latest_pct;
+    if (!usage_rate_compute(&rate_per_min, &latest_pct)) return -1.0f;
+    return rate_per_min * 60.0f;
+}
+
+int usage_rate_mins_to_full(void) {
+    float rate_per_min, latest_pct;
+    if (!usage_rate_compute(&rate_per_min, &latest_pct)) return -1;
+    if (rate_per_min <= 0.0f) return -2;
+
+    float remaining = 100.0f - latest_pct;
+    // Already at/over the cap by the newest sample — no wait left, rather
+    // than a bogus negative minute count.
+    if (remaining <= 0.0f) return 0;
+
+    return (int)(remaining / rate_per_min);
+}

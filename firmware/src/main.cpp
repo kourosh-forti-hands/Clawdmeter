@@ -117,6 +117,12 @@ static bool parse_json(const char* json, UsageData* out) {
     out->session_window_mins = doc["sw"] | 0;
     out->weekly_window_mins  = doc["ww"] | 0;
     strlcpy(out->claim, doc["rc"] | "", sizeof(out->claim));
+    // Everything below is optional: an older daemon simply omits the key and
+    // the UI renders a dash rather than inventing a value.
+    strlcpy(out->weekly_status,  doc["ws"]  | "", sizeof(out->weekly_status));
+    strlcpy(out->overage,        doc["ov"]  | "", sizeof(out->overage));
+    strlcpy(out->overage_reason, doc["ovr"] | "", sizeof(out->overage_reason));
+    out->fallback_pct = doc["fb"] | -1;
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);
@@ -237,7 +243,7 @@ void setup() {
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
     ui_update_battery(power_hal_battery_pct(), power_hal_is_charging());
-    ui_show_screen(SCREEN_SPLASH);
+    ui_show_screen(SCREEN_USAGE);  // TEMP QA
 
     Serial.printf("Dashboard ready (%s, %dx%d), waiting for data on BLE...\n",
         board_caps().name, W, H);

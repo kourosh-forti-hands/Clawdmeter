@@ -5,6 +5,12 @@
 enum screen_t {
     SCREEN_SPLASH,
     SCREEN_USAGE,
+    // Extra pages, built only on boards that report rich_info (wide landscape
+    // panels with room to spare). ui_show_screen() falls back to SCREEN_USAGE
+    // for these on boards where they were never built, so the navigation cycle
+    // collapses to splash<->usage exactly as before.
+    SCREEN_LIMITS,   // per-window deep dive: burn rate, projection, overage
+    SCREEN_SYSTEM,   // device, link and daemon diagnostics
     SCREEN_COUNT,
 };
 
