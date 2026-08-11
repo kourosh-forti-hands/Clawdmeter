@@ -75,11 +75,23 @@ Boards with no PMU and no PWR button can return zero/false from all five
 and `.height`. The current breakpoints are:
 
 - **`height >= 460`** → "large" layout, tuned for 480×480.
-- **otherwise** → "compact" layout, tuned for 368×448.
+- **`height >= 300`** → "compact" layout, tuned for 368×448.
+- **otherwise** → "small" layout, tuned for 240×240.
 
 A new screen size lands on the closer breakpoint and renders correctly
 without pixel-perfect alignment. If you want polish, add another branch
 to `compute_layout()` (please open a PR — others with that size benefit).
+
+Panel *placement* within a breakpoint is derived separately by
+`usage_compute_slots()` in `src/usage_layout.h`: the two usage panels stack
+vertically except on wide landscape panels (`width >= 700 && width > height`),
+where they sit side by side. That function is pure and unit-tested on the host
+in `test/test_usage_layout/`, which pins the geometry of every existing board —
+run it before and after any change to panel layout.
+
+`BoardCaps.button_count == 0` is meaningful: it tells the UI the board has no
+readable physical button, and `ui.cpp` builds on-screen TALK/MODE controls that
+issue the same HID keys `main.cpp` sends for physical buttons.
 
 The splash screen is fully responsive — `CELL` is computed as
 `min(width, height) / 20` so the 20×20 pixel-art creature fills the
