@@ -156,9 +156,17 @@ Device path differs by OS: `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM0` on Linux
 ## Desktop simulator (`-e sim`) — develop UI without hardware
 
 ```bash
-sudo apt install libsdl2-dev   # once (macOS: brew install sdl2)
-pio run -d firmware -e sim && (cd firmware && .pio/build/sim/program)
+brew install sdl2              # once (Linux: sudo apt install libsdl2-dev)
+pio run -d firmware -e sim    && (cd firmware && .pio/build/sim/program)     # 480x480
+pio run -d firmware -e sim_43 && (cd firmware && .pio/build/sim_43/program)  # 800x480
 ```
+
+`sim_43` is the same simulator sized as the LCD-4.3. It exists because the
+wide-landscape UI (arc gauges, History/System pages, five-key deck) is gated on
+`width >= 700 && width > height`, so the 480x480 `sim` can never render it.
+Geometry comes from build flags — `boards/sim/board.h` guards LCD_WIDTH /
+LCD_HEIGHT / BOARD_NAME with `#ifndef`, so a new panel shape is a new env, not
+a new board.
 
 An SDL2 window stands in for the 480×480 panel; the **full firmware loop runs
 unmodified** — `main.cpp`, `ui.cpp`, `splash.cpp`, idle fade, pair gesture,
