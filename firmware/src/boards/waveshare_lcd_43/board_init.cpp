@@ -7,24 +7,15 @@
 // display_hal_init(), because EXIO2 gates the backlight and EXIO1 gates the
 // touch controller's reset.
 
-// TEMPORARY bring-up instrumentation — removed once the port is verified on
-// hardware. Prints every ACKing I2C address so the CH422G (whose 0x24/0x38/
-// 0x23/0x26 respond as addresses, not as one device) and the GT911 (0x5D or
-// 0x14) can be identified before a single pixel is drawn.
-static void i2c_scan(void) {
-    Serial.println("I2C scan:");
-    for (uint8_t addr = 0x08; addr < 0x78; ++addr) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) Serial.printf("  ACK 0x%02X\n", addr);
-    }
-    Serial.println("I2C scan done");
-}
+// Bring-up note (scan removed after verification): on this board the I2C scan
+// ACKs 0x20-0x27 and 0x30-0x3F — that whole range is the single CH422G, whose
+// addresses ARE its registers — plus 0x5D for the GT911. If touch ever stops
+// responding, check for 0x5D first; 0x14 would mean the INT-low-during-reset
+// address selection below did not take.
 
 extern "C" void board_init(void) {
     Wire.begin(IIC_SDA, IIC_SCL);
     delay(50);            // let the expander and touch controller settle
-
-    i2c_scan();           // TEMPORARY — remove once verified on hardware
 
     ch422g_init();
 

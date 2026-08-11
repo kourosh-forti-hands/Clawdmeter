@@ -55,8 +55,23 @@
 #define LCD_VSYNC_BACK       32
 #define LCD_PCLK_ACTIVE_NEG  1
 #define LCD_PREFER_SPEED     16000000
-// Non-zero enables the esp_lcd bounce-buffer path; raise if tearing appears.
-#define LCD_BOUNCE_BUF_PX    0
+// Bounce buffers: REQUIRED on this board.
+//
+// With the framebuffer in PSRAM, the RGB peripheral's scan-out DMA competes
+// with the CPU for PSRAM bandwidth and starves mid-frame. On hardware at 0
+// this shows as heavy flicker during the splash animation. Routing the scan
+// through two internal-SRAM bounce buffers (PSRAM -> SRAM -> LCD) decouples
+// the panel's timing from that contention and the animation becomes smooth —
+// verified by A/B on real hardware, 0 vs the value below.
+//
+// 10 lines * 800 px = 16 KB per buffer, 32 KB of internal SRAM total.
+//
+// Note for anyone reading serial logs while changing this: printf output stops
+// arriving partway through setup() on this board regardless of this setting
+// (see the boot-log note in CLAUDE.md). That is a serial-transport quirk, NOT
+// a hang — the firmware runs on, LVGL renders, and the serial command handler
+// still answers. Do not diagnose a hang from silence alone here.
+#define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 10)
 
 // ---- I2C bus (CH422G expander + GT911 touch) ----
 #define IIC_SDA              8
