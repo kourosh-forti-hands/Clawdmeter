@@ -5,6 +5,7 @@
 #include "logo.h"
 #include "icons.h"
 #include "hal/board_caps.h"
+#include "usage_layout.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
 LV_FONT_DECLARE(font_tiempos_56);
@@ -29,6 +30,7 @@ struct Layout {
     int16_t title_y;
     int16_t content_y;
     int16_t content_w;
+    UsageSlots slots;                // panel placement (stacked or two-column)
 
     // Usage screen
     int16_t usage_panel_h;
@@ -175,6 +177,12 @@ static void compute_layout(const BoardCaps& c) {
     }
 
     L.content_w = L.scr_w - 2 * L.margin;
+
+    // Panel placement is derived, not per-breakpoint: every existing board
+    // stacks, and wide landscape panels (the LCD-4.3) go side by side. Pinned
+    // by test/test_usage_layout/.
+    L.slots = usage_compute_slots(L.scr_w, L.scr_h, L.margin, L.content_y,
+                                  L.usage_panel_h, L.usage_panel_gap);
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -387,10 +395,11 @@ static void init_battery_icons(void) {
 
 // ======== Usage Screen ========
 
-static lv_obj_t* make_usage_panel(lv_obj_t* parent, int y, const char* pill_text,
+static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
+                                  const char* pill_text,
                                   lv_obj_t** out_pct, lv_obj_t** out_pill,
                                   lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, L.margin, y, L.content_w, L.usage_panel_h);
+    lv_obj_t* panel = make_panel(parent, x, y, w, L.usage_panel_h);
 
     *out_pct = lv_label_create(panel);
     lv_label_set_text(*out_pct, "---%");
@@ -402,7 +411,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int y, const char* pill_text
     lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
     *out_bar = make_bar(panel, 0, L.usage_bar_y,
-                        L.content_w - 2 * L.panel_pad_x, L.bar_h);
+                        w - 2 * L.panel_pad_x, L.bar_h);
 
     *out_reset = lv_label_create(panel);
     lv_label_set_text(*out_reset, "---");
@@ -497,7 +506,8 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    panel_session = make_usage_panel(usage_group, L.content_y, "Current",
+    panel_session = make_usage_panel(usage_group, L.slots.p1_x, L.slots.p1_y,
+                     L.slots.panel_w, "Current",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
 
@@ -521,8 +531,8 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_pos(lbl_spending_status, 0, L.usage_reset_y + 20);
     lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
 
-    panel_weekly = make_usage_panel(usage_group,
-                     L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
+    panel_weekly = make_usage_panel(usage_group, L.slots.p2_x, L.slots.p2_y,
+                     L.slots.panel_w, "Weekly",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
     // Recolor enabled so enterprise period box can color pace and reset separately
