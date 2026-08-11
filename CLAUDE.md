@@ -14,7 +14,7 @@ Seven ports today (two SoC families, five panel sizes, three display bus types):
 - `boards/waveshare_amoled_18_c6/` — Waveshare ESP32-C6-Touch-AMOLED-1.8 (368×448 portrait, SH8601, FT3168 touch, TCA9554 expander). Build env: `waveshare_amoled_18_c6`. Same panel as the S3 1.8 but on the C6 SoC. All subsystems (display, touch, BOOT + PWR buttons, battery, BLE) verified on hardware.
 - `boards/waveshare_amoled_206/` — Waveshare ESP32-S3-Touch-AMOLED-2.06 (CO5300, 410×502 watch form factor, FT3168 touch, no IO expander, 32 MB flash, PCF85063 RTC, ES8311 codec). Build env: `waveshare_amoled_206`. Display, touch, battery, IMU init, and BLE verified on hardware; the ES8311 chime path is not wired up (`sound.cpp` no-ops).
 - `boards/waveshare_lcd_154/` — Waveshare ESP32-S3-Touch-LCD-1.54 (ST7789, 240×240 square, CST816T touch @ 0x15). Build env: `waveshare_lcd_154`. **The first non-AMOLED port**: a plain 4-wire SPI TFT, not QSPI, and the panel has no brightness command — backlight is LEDC PWM on `LCD_BL`. **No PMU**: battery is an ADC divider on GPIO1 and `BAT_EN` (GPIO2) is a power-hold line that must be driven HIGH early in `board_init()` or the board browns out on battery. Three buttons (BOOT + GPIO5 + a PWR-role GPIO4); ES8311 chime wired up; QMI8658 populated but unused (fixed orientation, no rotation).
-- `boards/waveshare_lcd_43/` — Waveshare ESP32-S3-Touch-LCD-4.3 (ST7262-class 800×480 RGB **parallel** IPS, GT911 touch @ 0x5D, CH422G IO expander). Build env: `waveshare_lcd_43`. **The first parallel-bus panel**: 16 data lines + DE/VSYNC/HSYNC/PCLK driven by the ESP32-S3 LCD peripheral out of a 768 KB PSRAM framebuffer — there is no panel-side GRAM, so `display_hal_draw_bitmap` is a copy into RAM, not a bus transaction. **No readable physical button**: GPIO 0 carries the green data line G3, and on an ESP32-S3 GPIO 0 *is* the BOOT strap pin, so it is an LCD output at runtime. HID Space/Shift+Tab come from on-screen buttons (`button_count == 0` in `BoardCaps`), and the PWR role is a 72×72 touch hot corner in the bottom-left that `touch.cpp` hides from LVGL. Backlight is a single on/off line (CH422G EXIO2), so brightness levels are synthesised by scaling pixels through a LUT inside `display_hal_draw_bitmap`. No PMU, no battery ADC, no IMU, no codec.
+- `boards/waveshare_lcd_43/` — Waveshare ESP32-S3-Touch-LCD-4.3 (ST7262-class 800×480 RGB **parallel** IPS, GT911 touch @ 0x5D, CH422G IO expander). Build env: `waveshare_lcd_43`. **The first parallel-bus panel**: 16 data lines + DE/VSYNC/HSYNC/PCLK driven by the ESP32-S3 LCD peripheral out of a 768 KB PSRAM framebuffer — there is no panel-side GRAM, so `display_hal_draw_bitmap` is a copy into RAM, not a bus transaction. **No readable physical button**: GPIO 0 carries the green data line G3, and on an ESP32-S3 GPIO 0 *is* the BOOT strap pin, so it is an LCD output at runtime. HID Space/Shift+Tab come from on-screen buttons (`button_count == 0` in `BoardCaps`), and the PWR role is a 72×72 touch hot corner in the bottom-left that `touch.cpp` hides from LVGL. Backlight is a single on/off line (CH422G EXIO2), so brightness levels are synthesised by scaling pixels through a LUT inside `display_hal_draw_bitmap`. No PMU, no battery ADC, no IMU, no codec. **Bounce buffers are required** (`LCD_BOUNCE_BUF_PX`) — at 0 the RGB scan-out DMA and the CPU contend for PSRAM bandwidth and the splash animation flickers heavily. Touch is **polled, not interrupt-driven**: `attachInterrupt()` runs `esp_intr_alloc` → `malloc` on the ~1 KB `ipc1` task stack, and this board's continuous LCD refill interrupts land mid-allocation and trip the stack canary. Display, touch, virtual PWR corner, soft HID buttons, two-column layout, BLE bonding and daemon connectivity all verified on hardware.
 
 Plus one non-hardware target: `boards/sim/` — **native desktop simulator** (SDL2 window, 480×480, `platform = native`). Build env: `sim`. See "Desktop simulator" below.
 
@@ -214,7 +214,21 @@ The boot screen is `SCREEN_SPLASH` and only advances on a physical button press,
     an overlay would leave the splash undimmed. Note also that
     `display_hal_begin()` runs *before* `lv_init()` in `main.cpp::setup()`,
     so a board's display code cannot touch LVGL objects at begin time.
-12. **No `#ifdef BOARD_*` in shared code.** The whole point of the refactor — if you're about to add one, you probably want a `BoardCaps` field or a per-board file instead. See `docs/porting/capability-flags.md`.
+12. **Hosts cache the GATT database per bond — reflashing strands them.** Both
+    macOS and Windows cache a peripheral's service database against the bond.
+    If you bond during development and then reflash, the host keeps using the
+    cached database and may never subscribe to a characteristic it didn't see
+    the first time. `notify()` on an unsubscribed characteristic is **silently
+    discarded** while the link still reports itself connected, so every
+    indicator stays green: `state = BLE_STATE_CONNECTED`, and macOS lists the
+    device under `Minor Type: Keyboard` with a battery level. The symptom
+    presents as "the HID buttons do nothing", not as anything BLE-shaped.
+    Fix: System Settings → Bluetooth → Forget This Device, then reconnect.
+    Confirm with the boot log — `BLE: HID kbd onSubscribe subValue=1` means the
+    host actually enabled notifications; `subValue=0` or silence means it did
+    not. `ble.cpp` keeps that log and the matching `req_char onSubscribe` one
+    permanently for exactly this reason.
+13. **No `#ifdef BOARD_*` in shared code.** The whole point of the refactor — if you're about to add one, you probably want a `BoardCaps` field or a per-board file instead. See `docs/porting/capability-flags.md`.
 
 ## Icons
 
