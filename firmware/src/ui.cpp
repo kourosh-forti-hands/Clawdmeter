@@ -748,10 +748,12 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
     lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
+    // Clearing SCROLLABLE is sufficient: lv_obj_get_scrollbar_area() returns
+    // immediately for a non-scrollable object, so no bar is ever computed.
+    // (An earlier comment here claimed otherwise and added a redundant
+    // scrollbar-mode call — both were chasing a hairline that actually came
+    // from the SCREEN's scrollbar, not the page's. See ui_init.)
     lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
-    // Clearing SCROLLABLE stops scrolling but LVGL still renders the bar,
-    // which shows as a stray hairline across the bottom of the page.
-    lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(page, global_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
 
@@ -936,6 +938,17 @@ void ui_init(void) {
     compute_layout(board_caps());
 
     lv_obj_t* scr = lv_screen_active();
+
+    // The screen must never be scrollable. The mascot is a direct child of it
+    // and deliberately parks ~27 px past the right edge while still visible
+    // during walk-off trips (splash.cpp: mas_x = mas_screen_w before
+    // MAS_WALK_IN). lv_obj_get_scroll_right() counts any visible, non-floating
+    // child, so that overhang makes the screen horizontally scrollable and the
+    // default LV_SCROLLBAR_MODE_AUTO paints a 4 px bar across y=470..473 —
+    // which reads as a stray hairline at the bottom of whichever page happens
+    // to be showing. It also means a drag on the background could shift the
+    // whole UI sideways. Nothing here is ever meant to scroll.
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 

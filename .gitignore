@@ -21,3 +21,7 @@ __pycache__/
 
 # Host unit-test binaries
 firmware/test/**/t
+
+# Hook/session log dirs (never source)
+logs/
+**/logs/
