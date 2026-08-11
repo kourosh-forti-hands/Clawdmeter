@@ -111,6 +111,12 @@ static bool parse_json(const char* json, UsageData* out) {
     out->weekly_pct = doc["w"] | 0.0f;
     out->weekly_reset_mins = doc["wr"] | -1;
     strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
+    // Window lengths come from the daemon, which parses them out of the API's
+    // own header names. 0 means unknown — the UI hides the pace readout rather
+    // than assuming a window length.
+    out->session_window_mins = doc["sw"] | 0;
+    out->weekly_window_mins  = doc["ww"] | 0;
+    strlcpy(out->claim, doc["rc"] | "", sizeof(out->claim));
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);

@@ -436,6 +436,23 @@ async def poll_api(token: str) -> dict | None:
         except ValueError:
             return 0
 
+    def window_minutes(header_name: str) -> int:
+        """Window length in minutes, taken from the header the API declares it in.
+
+        The response exposes reset *timestamps* but never the window length as a
+        value — however it names each window in the header key itself
+        (`anthropic-ratelimit-unified-5h-reset`, `...-7d-...`). Parsing it from
+        there keeps the number sourced from the API rather than assumed, so a
+        window the API renames or re-scales stops reporting instead of silently
+        reporting a wrong percentage. Returns 0 when unrecognised, which the
+        firmware treats as "don't show a pace readout".
+        """
+        m = re.search(r"unified-(\d+)([hdm])-", header_name)
+        if not m:
+            return 0
+        n, unit = int(m.group(1)), m.group(2)
+        return n * {"m": 1, "h": 60, "d": 1440}[unit]
+
     # Pro/Max accounts expose 5h/7d windows; Enterprise/overage use a single
     # spending-limit model reported via overage-utilization.
     if resp.headers.get("anthropic-ratelimit-unified-5h-utilization"):
@@ -445,6 +462,17 @@ async def poll_api(token: str) -> dict | None:
             "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
             "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
             "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
+            # Window lengths, parsed from the header names above so the device
+            # never hardcodes them. See window_minutes().
+            "sw": window_minutes("anthropic-ratelimit-unified-5h-reset"),
+            "ww": window_minutes("anthropic-ratelimit-unified-7d-reset"),
+            # Which window is currently the binding constraint, per the API.
+            "rc": hdr("anthropic-ratelimit-unified-representative-claim", ""),
+            # NOT a detected plan tier — the API exposes no Pro/Max/Team
+            # distinction (verified: the only identity headers are
+            # anthropic-organization-id and anthropic-workspace-id). This flag
+            # means "not an enterprise spending-limit account" and nothing more;
+            # the firmware must not render it as a plan name.
             "acct": "pro",
             "ok": True,
         }

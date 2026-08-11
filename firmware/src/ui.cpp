@@ -33,6 +33,15 @@ struct Layout {
     int16_t content_w;
     UsageSlots slots;                // panel placement (stacked or two-column)
 
+    // Rich info mode — wide landscape panels have room for a pace/detail line
+    // inside each panel plus a footer status strip. Off everywhere else, where
+    // the extra text would crowd the layout.
+    bool    rich_info;
+    int16_t detail_y;                // y offset INSIDE each usage panel
+    int16_t footer_y;                // absolute y of the footer status strip
+    const lv_font_t* detail_font;
+    const lv_font_t* footer_font;
+
     // On-screen HID controls, for boards with no readable physical button
     bool    soft_buttons;
     int16_t softbtn_w, softbtn_h;
@@ -193,7 +202,14 @@ static void compute_layout(const BoardCaps& c) {
     // vertical rhythm is title -> panels -> buttons -> status rather than
     // title -> panels -> void -> buttons.
     if (L.scr_w >= USAGE_TWO_COL_MIN_W && L.scr_w > L.scr_h) {
-        L.content_y = 132;
+        L.content_y = 112;
+        // Taller panels to fit the extra detail line, and the rich-info extras.
+        L.usage_panel_h = 190;
+        L.rich_info   = true;
+        L.detail_y    = 132;
+        L.footer_y    = 314;
+        L.detail_font = &font_styrene_20;
+        L.footer_font = &font_styrene_16;
     }
 
     // Panel placement is derived, not per-breakpoint: every existing board
@@ -241,6 +257,17 @@ static lv_obj_t* bar_session;
 static lv_obj_t* lbl_session_pct;
 static lv_obj_t* lbl_session_label;
 static lv_obj_t* lbl_session_reset;
+// Rich-info extras (wide landscape only; NULL elsewhere)
+static lv_obj_t* lbl_session_detail = nullptr;
+static lv_obj_t* lbl_weekly_detail  = nullptr;
+static lv_obj_t* lbl_footer         = nullptr;
+static lv_obj_t* lbl_corner_clock   = nullptr;
+// Cached from the last payload so ui_tick_anim can rebuild the footer string
+// every second without keeping a pointer to the caller's UsageData. Freshness
+// reuses the existing last_data_ms below, which update_view_state already
+// maintains for its staleness check.
+static bool      s_last_enterprise  = false;
+static char      s_last_status[16]  = "";
 static lv_obj_t* bar_weekly;
 static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
@@ -345,6 +372,37 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     } else {
         snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
     }
+}
+
+// Rich-info detail line: how fast the budget is being spent relative to how
+// much of the window has elapsed. A 5h window 60% gone with 4% used is very
+// different from 4% used 5 minutes in, and the bare percentage can't say which.
+// Colours match the enterprise pace verdict so the two views read alike.
+static void format_pace_detail(float used_pct, int remaining_mins, int window_mins,
+                               char* buf, size_t len) {
+    if (remaining_mins < 0 || window_mins <= 0) {
+        snprintf(buf, len, " ");   // window length unknown — say nothing
+        return;
+    }
+    int elapsed = window_mins - remaining_mins;
+    if (elapsed < 0)           elapsed = 0;
+    if (elapsed > window_mins) elapsed = window_mins;
+    const int elapsed_pct = (int)((long)elapsed * 100 / window_mins);
+
+    const char* verdict;
+    const char* hex;
+    if (used_pct < (float)elapsed_pct - 10.0f)      { verdict = "Under pace"; hex = "788c5d"; }
+    else if (used_pct > (float)elapsed_pct + 10.0f) { verdict = "Over pace";  hex = "c0392b"; }
+    else                                            { verdict = "On pace";    hex = "d97757"; }
+
+    // Window label derived from the length itself, so it always matches
+    // whatever the API declared rather than a second hardcoded string.
+    char wlabel[8];
+    if (window_mins % 1440 == 0)   snprintf(wlabel, sizeof(wlabel), "%dd", window_mins / 1440);
+    else if (window_mins % 60 == 0) snprintf(wlabel, sizeof(wlabel), "%dh", window_mins / 60);
+    else                            snprintf(wlabel, sizeof(wlabel), "%dm", window_mins);
+
+    snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
 }
 
 // Forward decls — callbacks defined near ui_show_screen below
@@ -613,6 +671,44 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
 
+    // Rich-info extras: a pace/detail line inside each panel and a footer strip.
+    // Recolor is on so the pace verdict can be tinted without extra widgets.
+    if (L.rich_info) {
+        lbl_session_detail = lv_label_create(panel_session);
+        lv_label_set_recolor(lbl_session_detail, true);
+        lv_label_set_text(lbl_session_detail, "");
+        lv_obj_set_style_text_font(lbl_session_detail, L.detail_font, 0);
+        lv_obj_set_style_text_color(lbl_session_detail, COL_DIM, 0);
+        lv_obj_set_pos(lbl_session_detail, 0, L.detail_y);
+
+        lbl_weekly_detail = lv_label_create(panel_weekly);
+        lv_label_set_recolor(lbl_weekly_detail, true);
+        lv_label_set_text(lbl_weekly_detail, "");
+        lv_obj_set_style_text_font(lbl_weekly_detail, L.detail_font, 0);
+        lv_obj_set_style_text_color(lbl_weekly_detail, COL_DIM, 0);
+        lv_obj_set_pos(lbl_weekly_detail, 0, L.detail_y);
+
+        // Footer strip: account tier, API status, and data freshness. Lives on
+        // usage_group so it hides with the panels when the link drops — stale
+        // metadata next to a pairing hint would be misleading.
+        lbl_footer = lv_label_create(usage_group);
+        lv_label_set_text(lbl_footer, "");
+        lv_obj_set_style_text_font(lbl_footer, L.footer_font, 0);
+        lv_obj_set_style_text_color(lbl_footer, COL_DIM, 0);
+        lv_obj_set_pos(lbl_footer, L.margin, L.footer_y);
+
+        // Clock in the top-right. On narrow boards the clock replaces the
+        // title, because there is nowhere else for it; here the battery slot
+        // is free (this board has no battery telemetry) so we can show both
+        // the title and the time. Stays empty until the daemon opts in by
+        // sending wall-clock fields — see read_clock_setting() daemon-side.
+        lbl_corner_clock = lv_label_create(usage_container);
+        lv_label_set_text(lbl_corner_clock, "");
+        lv_obj_set_style_text_font(lbl_corner_clock, L.title_font, 0);
+        lv_obj_set_style_text_color(lbl_corner_clock, COL_DIM, 0);
+        lv_obj_align(lbl_corner_clock, LV_ALIGN_TOP_RIGHT, -L.margin, L.title_y);
+    }
+
     build_pair_group(usage_container);
     build_idle_group(usage_container);
 
@@ -777,6 +873,34 @@ void ui_update(const UsageData* data) {
         format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
     }
+
+    // Rich-info extras. Enterprise already carries its own pace verdict in the
+    // period box, so the per-panel detail is Pro/Max only; the footer applies
+    // to both.
+    s_last_enterprise = data->enterprise;
+    strlcpy(s_last_status, data->status, sizeof(s_last_status));
+    if (lbl_session_detail && !data->enterprise) {
+        // Window lengths are supplied by the daemon (parsed from the API's own
+        // header names), never assumed here. A 0 means the API named a window
+        // we don't recognise, in which case format_pace_detail blanks the line
+        // rather than printing a confident wrong percentage.
+        format_pace_detail(data->session_pct, data->session_reset_mins,
+                           data->session_window_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_session_detail, buf);
+        format_pace_detail(data->weekly_pct, data->weekly_reset_mins,
+                           data->weekly_window_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_weekly_detail, buf);
+    }
+    if (lbl_footer) {
+        // No tier label for non-enterprise accounts. The daemon hardcodes
+        // "acct":"pro" to mean "not an enterprise spending-limit account", and
+        // neither it nor ~/.claude.json can distinguish Pro from Max (seatTier
+        // is null, billingType is just "stripe_subscription"). Printing "Pro"
+        // would be a guess shown as a fact to every Max subscriber.
+        snprintf(buf, sizeof(buf), "%s%s - updated just now",
+                 data->enterprise ? "Enterprise - " : "", data->status);
+        lv_label_set_text(lbl_footer, buf);
+    }
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -809,6 +933,23 @@ void ui_tick_anim(void) {
 
     uint32_t now = lv_tick_get();
 
+    // Footer freshness. Recomputed here rather than in ui_update so a stalled
+    // daemon is visible: the age keeps climbing instead of freezing at the last
+    // successful poll, which is the whole point of showing it.
+    if (lbl_footer && last_data_ms != 0) {
+        static uint32_t footer_last_s = 0xFFFFFFFF;
+        const uint32_t age_s = (now - last_data_ms) / 1000;
+        if (age_s != footer_last_s) {
+            footer_last_s = age_s;
+            const char* tier = s_last_enterprise ? "Enterprise - " : "";
+            char fbuf[64];
+            if (age_s < 5)        snprintf(fbuf, sizeof(fbuf), "%s%s - updated just now", tier, s_last_status);
+            else if (age_s < 90)  snprintf(fbuf, sizeof(fbuf), "%s%s - updated %lus ago", tier, s_last_status, (unsigned long)age_s);
+            else                  snprintf(fbuf, sizeof(fbuf), "%s%s - updated %lum ago", tier, s_last_status, (unsigned long)(age_s / 60));
+            lv_label_set_text(lbl_footer, fbuf);
+        }
+    }
+
     // Title clock: once the daemon has sent wall-clock time, replace "Usage" with
     // the live time, advanced locally so it ticks every minute between payloads.
     if (clock_base_epoch > 0) {
@@ -826,7 +967,9 @@ void ui_tick_anim(void) {
             } else {
                 snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
             }
-            lv_label_set_text(lbl_title, tbuf);
+            // Wide boards show the clock beside the title rather than instead
+            // of it — there is a free corner, so we don't have to choose.
+            lv_label_set_text(lbl_corner_clock ? lbl_corner_clock : lbl_title, tbuf);
         }
     }
 
