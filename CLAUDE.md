@@ -182,6 +182,25 @@ desktop LVGL and fake data — always do a final check on real hardware before
 merging panel-related changes** (col offsets, rotation, rounding live in the
 hardware boards, not shared code).
 
+## Host unit tests
+
+```bash
+firmware/test/run_all.sh     # every host test; exits non-zero on failure
+```
+
+The pure, hardware-free parts of the firmware are unit-tested on the dev
+machine — splash geometry, usage-panel placement, the LCD-4.3's brightness LUT
+and PWR hot corner, and the usage-rate burn-rate math. Each test includes its
+subject directly, because those subjects keep state in file statics with no
+accessors.
+
+Use the runner rather than invoking `g++` by hand: the tests need **both**
+`-I ../../src` (to find the subject) and `-I .` (to find a test-local shim,
+e.g. `test_usage_rate/Arduino.h`, which fakes `millis()` for code that calls
+it). Angle-bracket includes resolve only via `-I` paths, so omitting `-I .`
+fails with "Arduino.h file not found" on that one test and looks like a broken
+test rather than a missing flag.
+
 ## QA your own UI changes — don't ask the user
 
 The firmware ships a `screenshot` serial command that dumps the LVGL framebuffer. `./screenshot.sh out.png [port]` captures a PNG sized to the active display (480×480 or 368×448). **Use this on every UI iteration** — Read the PNG with the Read tool, verify the change visually, iterate. Script auto-picks the macOS/Linux default port and falls back to pio's bundled Python if pyserial isn't on the system Python.
