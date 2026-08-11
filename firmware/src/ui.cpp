@@ -185,6 +185,16 @@ static void compute_layout(const BoardCaps& c) {
 
     L.content_w = L.scr_w - 2 * L.margin;
 
+    // Wide landscape panels stack their content very differently: the two
+    // usage panels sit side by side and only occupy one row, so the default
+    // content_y tuned for portrait/square boards leaves a large dead band
+    // between the panels and the controls below. Drop the row lower so the
+    // vertical rhythm is title -> panels -> buttons -> status rather than
+    // title -> panels -> void -> buttons.
+    if (L.scr_w >= USAGE_TWO_COL_MIN_W && L.scr_w > L.scr_h) {
+        L.content_y = 132;
+    }
+
     // Panel placement is derived, not per-breakpoint: every existing board
     // stacks, and wide landscape panels (the LCD-4.3) go side by side. Pinned
     // by test/test_usage_layout/.
@@ -199,7 +209,7 @@ static void compute_layout(const BoardCaps& c) {
     L.softbtn_h    = 72;
     L.softbtn_gap  = 24;
     // Raised clear of the status line, which sits at anim_y from the bottom.
-    L.softbtn_y    = -60;
+    L.softbtn_y    = -68;
     L.softbtn_font = &font_styrene_28;
 }
 
