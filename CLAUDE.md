@@ -182,6 +182,61 @@ desktop LVGL and fake data — always do a final check on real hardware before
 merging panel-related changes** (col offsets, rotation, rounding live in the
 hardware boards, not shared code).
 
+## Wide-landscape UI (`BoardCaps` width >= 700 && width > height)
+
+The LCD-4.3 is the first landscape board and unlocks a richer UI, all gated on
+that runtime predicate (`L.rich_info` in `ui.cpp`) so no other port changes:
+
+- **Four screens, cycled by tapping**: splash → usage → History → System.
+  `SCREEN_LIMITS`/`SCREEN_SYSTEM` fall back to the usage view on boards where
+  they were never built, so narrow boards keep the original two-state toggle.
+- **Usage page**: radial `lv_arc` gauges instead of bars, **tinted by pace**
+  (`pace_color_for()`) rather than absolute level — 40% used is fine 90% into a
+  window and alarming 10% in. The percentage and the pace verdict live *inside*
+  the ring; the percentage must be a CHILD of the arc, since aligning a sibling
+  computes coordinates before LVGL lays the arc out and clips the digits.
+- **History page**: an `lv_chart` in shift mode owns the ring buffer, one point
+  per payload, backed by `history_store` so it survives reboots.
+- **System page**: board, resolution, uptime, free heap/PSRAM, link MAC, bond
+  state, data age, build stamp.
+- **Five-key HID deck** (`SOFT_KEYS` in `ui.cpp`), built when
+  `board_caps().button_count == 0`: TALK (Space, held for PTT), ESC, ENTER, UP,
+  MODE (Shift+Tab). Adding a key is a table row; deck geometry derives from
+  `SOFT_KEY_COUNT` and stays centred at any count.
+- **Clock** renders top-right beside the title (the battery slot is free on
+  boards without battery telemetry) instead of replacing the title as it does
+  on narrow boards. It stays blank until the daemon opts in — set `clock = 24`
+  (or `auto`/`12`) in `~/.config/claude-usage-monitor/config`.
+
+**Never reuse the usage page's `content_y` for the extra pages** — it is tuned
+around the gauges and sits high enough to clip a page title's descenders. Pages
+use their own `PAGE_TOP`.
+
+**The screen itself must stay non-scrollable.** `ui_init()` clears
+`LV_OBJ_FLAG_SCROLLABLE` on `lv_screen_active()`: the roaming mascot is a direct
+child of the screen and parks past the right edge while visible during walk-off
+trips, which otherwise makes the screen scrollable and paints a stray 4 px
+scrollbar hairline across y=470..473.
+
+## Data the daemon supplies (all pulled, never assumed)
+
+Beyond `s`/`sr`/`w`/`wr`/`st`, the payload carries `sw`/`ww` (window lengths,
+parsed from the API's own header *names* by `window_minutes()`), `rc` (which
+window the API says is binding), `ws` (7d status), and `ov`/`ovr`/`fb` (overage
+status, its disabled reason, fallback percentage).
+
+**Do not render `acct` as a plan tier.** It is a hardcoded literal meaning "not
+an enterprise spending-limit account" — the API exposes no Pro/Max distinction
+(the only identity headers are `anthropic-organization-id` and
+`anthropic-workspace-id`), and `~/.claude.json` has `seatTier` null with
+`billingType` only `stripe_subscription`. Showing "Pro" told a Max subscriber
+something untrue. A 0 in `sw`/`ww` likewise means "unknown window" and the UI
+hides the pace readout rather than assuming a length.
+
+`usage_rate.h` additionally exposes `usage_rate_pct_per_hour()` and
+`usage_rate_mins_to_full()` for the History page's burn-rate and projection,
+derived purely from observed samples with no quota constants.
+
 ## Host unit tests
 
 ```bash
