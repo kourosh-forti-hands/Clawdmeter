@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "splash.h"
 #include "usage_rate.h"        // burn rate + projection for the Limits page
+#include "history_store.h"     // trend samples that survive a reboot
 #include <lvgl.h>
 #include <time.h>
 #include <Arduino.h>           // millis() for the System page's uptime
@@ -971,9 +972,21 @@ void ui_init(void) {
         hist_session_ser = lv_chart_add_series(hist_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
         hist_weekly_ser  = lv_chart_add_series(hist_chart, COL_GREEN,  LV_CHART_AXIS_PRIMARY_Y);
 
-        // History lives only in RAM, so it restarts at every boot. Say that
-        // plainly rather than seeding the series with the current value — a
-        // flat line would imply hours of history we simply do not have.
+        // Replay whatever survived the last power cycle, oldest first, so the
+        // chart opens with real history instead of a blank panel.
+        history_init();
+        const uint16_t restored = history_count();
+        for (uint16_t i = 0; i < restored; ++i) {
+            uint8_t sp = 0, wp = 0;
+            if (!history_get(i, &sp, &wp)) break;
+            lv_chart_set_next_value(hist_chart, hist_session_ser, sp);
+            lv_chart_set_next_value(hist_chart, hist_weekly_ser,  wp);
+        }
+        hist_samples = restored;
+
+        // Shown only until there are two points to draw a line between. Never
+        // seed the series with the current value to fill the gap — a flat line
+        // would imply hours of history we do not have.
         hist_hint = lv_label_create(limits_container);
         lv_label_set_text(hist_hint, "collecting - one point per minute");
         lv_obj_set_style_text_font(hist_hint, L.detail_font, 0);
@@ -1138,8 +1151,11 @@ void ui_update(const UsageData* data) {
     s_last_data = *data;
     // One point per payload; LVGL shifts the oldest off the left edge.
     if (hist_chart) {
-        lv_chart_set_next_value(hist_chart, hist_session_ser, (int32_t)(data->session_pct + 0.5f));
-        lv_chart_set_next_value(hist_chart, hist_weekly_ser,  (int32_t)(data->weekly_pct + 0.5f));
+        const uint8_t sp = (uint8_t)(data->session_pct + 0.5f);
+        const uint8_t wp = (uint8_t)(data->weekly_pct + 0.5f);
+        lv_chart_set_next_value(hist_chart, hist_session_ser, sp);
+        lv_chart_set_next_value(hist_chart, hist_weekly_ser,  wp);
+        history_push(sp, wp);   // persistence is rate-limited inside the store
         if (hist_samples < 0xFFFF) hist_samples++;
         // Two points make a line; below that the chart has nothing to show.
         if (hist_hint && hist_samples >= 2) lv_obj_add_flag(hist_hint, LV_OBJ_FLAG_HIDDEN);
