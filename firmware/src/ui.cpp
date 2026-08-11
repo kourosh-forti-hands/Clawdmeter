@@ -242,12 +242,13 @@ static void compute_layout(const BoardCaps& c) {
     // The LCD-4.3 is the first: GPIO 0 is an RGB data line there, so BOOT
     // cannot be read. Gated on the runtime capability, never on board name.
     L.soft_buttons = (c.button_count == 0);
-    L.softbtn_w    = 200;
+    // Five keys across 800 px with 20 px margins: 5*142 + 4*12 = 758.
+    L.softbtn_w    = L.rich_info ? 142 : 200;
     L.softbtn_h    = L.rich_info ? 60 : 72;
-    L.softbtn_gap  = 24;
+    L.softbtn_gap  = L.rich_info ? 12 : 24;
     // Raised clear of the status line, which sits at anim_y from the bottom.
     L.softbtn_y    = L.rich_info ? -22 : -68;
-    L.softbtn_font = &font_styrene_28;
+    L.softbtn_font = L.rich_info ? &font_styrene_24 : &font_styrene_28;
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -674,15 +675,35 @@ static void build_idle_group(lv_obj_t* parent) {
 // physical-button handling exactly: PTT holds Space for as long as the finger
 // is down, mode-toggle sends Shift+Tab.
 
-static void soft_talk_cb(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(0x2C, 0x00);  // Space
-    else if (code == LV_EVENT_RELEASED) ble_keyboard_release();
-}
+// The on-screen key deck. TALK and MODE are the modal keys (hold to talk,
+// cycle mode); ESC, ENTER and UP are the imperatives you reach for while
+// Claude is already working — interrupt it, approve a prompt, recall the last
+// one. Adding a key is a row here, not new code.
+//
+// Values are USB HID usage IDs; the modifier byte is the standard bitmask
+// (0x02 = left shift).
+struct SoftKey {
+    const char* label;
+    uint8_t     key;
+    uint8_t     mod;
+};
+static const SoftKey SOFT_KEYS[] = {
+    { "TALK",  0x2C, 0x00 },   // Space — held for voice-mode push-to-talk
+    { "ESC",   0x29, 0x00 },   // Escape — interrupt a running response
+    { "ENTER", 0x28, 0x00 },   // Return — approve a permission prompt
+    { "UP",    0x52, 0x00 },   // Up arrow — recall the previous prompt
+    { "MODE",  0x2B, 0x02 },   // Shift+Tab — cycle Claude Code's mode
+};
+#define SOFT_KEY_COUNT ((int)(sizeof(SOFT_KEYS) / sizeof(SOFT_KEYS[0])))
 
-static void soft_mode_cb(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(0x2B, 0x02);  // Shift+Tab
+// One callback for every key: press on down, release on up, exactly mirroring
+// how main.cpp drives physical buttons. Holding TALK therefore holds Space,
+// which is what push-to-talk requires.
+static void soft_key_cb(lv_event_t* e) {
+    const SoftKey* k = (const SoftKey*)lv_event_get_user_data(e);
+    if (!k) return;
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(k->key, k->mod);
     else if (code == LV_EVENT_RELEASED) ble_keyboard_release();
 }
 
@@ -690,7 +711,7 @@ static void soft_mode_cb(lv_event_t* e) {
 // reach usage_container's global_click_cb and toggle the splash screen.
 static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
                                   lv_align_t align, int16_t dx,
-                                  lv_event_cb_t cb) {
+                                  lv_event_cb_t cb, const void* user_data) {
     lv_obj_t* btn = lv_obj_create(parent);
     lv_obj_set_size(btn, L.softbtn_w, L.softbtn_h);
     lv_obj_align(btn, align, dx, L.softbtn_y);
@@ -708,8 +729,8 @@ static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
     lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
     lv_obj_center(lbl);
 
-    lv_obj_add_event_cb(btn, cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(btn, cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_PRESSED, (void*)user_data);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_RELEASED, (void*)user_data);
     return btn;
 }
 
@@ -897,11 +918,14 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Centred, the pair spans x 188..612 on an 800 px panel, clear of both
     // corners by a wide margin.
     if (L.soft_buttons) {
-        const int16_t dx = (int16_t)((L.softbtn_w + L.softbtn_gap) / 2);
-        make_soft_button(usage_container, "TALK", LV_ALIGN_BOTTOM_MID,
-                         (int16_t)-dx, soft_talk_cb);
-        make_soft_button(usage_container, "MODE", LV_ALIGN_BOTTOM_MID,
-                         dx, soft_mode_cb);
+        // Centred as one deck: key i sits (i - centre) steps either side of
+        // the middle, so the row stays centred whatever SOFT_KEY_COUNT is.
+        const int16_t step = (int16_t)(L.softbtn_w + L.softbtn_gap);
+        for (int i = 0; i < SOFT_KEY_COUNT; ++i) {
+            const int16_t dx = (int16_t)((i - (SOFT_KEY_COUNT - 1) / 2.0f) * step);
+            make_soft_button(usage_container, SOFT_KEYS[i].label,
+                             LV_ALIGN_BOTTOM_MID, dx, soft_key_cb, &SOFT_KEYS[i]);
+        }
     }
 }
 
