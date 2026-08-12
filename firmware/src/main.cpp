@@ -202,6 +202,16 @@ static void check_serial_cmd() {
             cmd_buf[cmd_pos] = '\0';
             if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+            // "screen N" jumps straight to a page so UI work can be captured
+            // without a physical button press. Boards only advance off the
+            // splash on a press, so without this the documented QA route is
+            // to edit the boot screen and reflash for every iteration.
+            // ui_show_screen() already falls back to SCREEN_USAGE for pages
+            // this board never built, so an out-of-range N is harmless.
+            else if (strncmp(cmd_buf, "screen ", 7) == 0) {
+                int n = atoi(cmd_buf + 7);
+                if (n >= 0 && n < SCREEN_COUNT) ui_show_screen((screen_t)n);
+            }
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;

@@ -25,7 +25,7 @@ static bool ev_long     = false;
 static bool ev_released = false;
 
 void power_hal_init(void) {
-    Serial.println("Power: no PMU; PWR is the bottom-left touch corner");
+    Serial.println("Power: no PMU; PWR is the top-right touch corner");
 }
 
 void power_hal_tick(void) {
