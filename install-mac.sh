@@ -222,7 +222,11 @@ echo "  interactively once below. Press Ctrl+C after you see 'Scanning...'"
 echo "  and grant permission when prompted. Then re-run this installer"
 echo "  (or just continue) to enable launchd autostart."
 echo ""
-read -r -p "Run a permission-priming scan now? [Y/n] " ans
+# Non-interactive stdin (piped, CI, or an agent shell) makes `read` return
+# non-zero at EOF, which `set -e` turns into a silent exit right here — the
+# script would appear to stop after the banner above with no error. Default to
+# "skip the scan" in that case, matching the `|| ans=""` guards used earlier.
+read -r -p "Run a permission-priming scan now? [Y/n] " ans || ans="n"
 if [[ ! "$ans" =~ ^[Nn]$ ]]; then
     "$PYTHON_BIN" "$DAEMON_PY" || true
 fi

@@ -1,11 +1,17 @@
 #include "ui.h"
 #include "splash.h"
+#include "usage_rate.h"        // burn rate + projection for the Limits page
+#include "history_store.h"     // trend samples that survive a reboot
 #include <lvgl.h>
 #include <time.h>
+#include <Arduino.h>           // millis() for the System page's uptime
+#include <esp_heap_caps.h>     // free heap / PSRAM, heatmap canvas buffer
+#include <string.h>
 #include "logo.h"
 #include "clawd_still.h"
 #include "icons.h"
 #include "hal/board_caps.h"
+#include "usage_layout.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
 LV_FONT_DECLARE(font_tiempos_56);
@@ -30,6 +36,29 @@ struct Layout {
     int16_t title_y;
     int16_t content_y;
     int16_t content_w;
+    UsageSlots slots;                // panel placement (stacked or two-column)
+
+    // Rich info mode — wide landscape panels have room for a pace/detail line
+    // inside each panel plus a footer status strip. Off everywhere else, where
+    // the extra text would crowd the layout.
+    bool    rich_info;
+    bool    use_arcs;                // radial gauges instead of bars
+    int16_t panel_margin;            // side margin for the panel column
+                                     // (wider than L.margin to stop the
+                                     //  official layout stretching)
+    int16_t detail_y;                // y offset INSIDE each usage panel
+    int16_t footer_y;                // absolute y of the footer status strip
+    int16_t arc_size;                // radial gauge diameter (rich_info only)
+    int16_t text_x;                  // x of the text column beside the gauge
+    const lv_font_t* detail_font;
+    const lv_font_t* footer_font;
+
+    // On-screen HID controls, for boards with no readable physical button
+    bool    soft_buttons;
+    int16_t softbtn_w, softbtn_h;
+    int16_t softbtn_y;               // offset from the bottom edge (negative)
+    int16_t softbtn_gap;
+    const lv_font_t* softbtn_font;
 
     // Usage screen
     int16_t usage_panel_h;
@@ -76,6 +105,7 @@ static void compute_layout(const BoardCaps& c) {
     L.scr_w = c.width;
     L.scr_h = c.height;
     L.margin = 20;
+    L.panel_margin = 0;   // 0 = follow L.margin unless a breakpoint overrides
     L.title_y = 30;
 
     // Values shared by the two original breakpoints; the small branch below
@@ -176,6 +206,69 @@ static void compute_layout(const BoardCaps& c) {
     }
 
     L.content_w = L.scr_w - 2 * L.margin;
+
+    // Wide landscape panels stack their content very differently: the two
+    // usage panels sit side by side and only occupy one row, so the default
+    // content_y tuned for portrait/square boards leaves a large dead band
+    // between the panels and the controls below. Drop the row lower so the
+    // vertical rhythm is title -> panels -> buttons -> status rather than
+    // title -> panels -> void -> buttons.
+    if (L.scr_w >= USAGE_TWO_COL_MIN_W && L.scr_w > L.scr_h) {
+        L.content_y = 112;
+        // Taller panels to fit the extra detail line, and the rich-info extras.
+        L.usage_panel_h = 190;
+        L.rich_info   = true;
+        // Gauge centred in the panel with its text stacked underneath. Beside
+        // the dial does not work at this panel width — "Under pace - 63% of 7d
+        // gone" is wider than the 200 px that would be left over.
+        // Canonical Clawdmeter layout (screenshots/usage.png). The design is
+        // proportioned for a square panel — its panels are 440x150, about
+        // 2.9:1. Spanning the full 800 px here would make them 760x134, twice
+        // as elongated, which is why the bar looked enormous and the
+        // percentage stranded from its pill. So the content is constrained to
+        // a centred 560 px column and the extra width becomes margin. The key
+        // deck below still spans the full width: it is a keyboard, and wider
+        // targets are easier to hit.
+        //
+        // Vertical budget: clock 18..76, panels 88..222 and 238..372,
+        // status ~380..398, keys 408..464.
+        L.panel_margin    = 120;       // (800 - 560) / 2
+        L.content_y       = 88;
+        L.usage_panel_h   = 134;
+        L.usage_panel_gap = 16;
+        L.use_arcs        = false;     // official design uses bars
+        // Internals fitted to 134 px panels (110 px of content):
+        // pct 0..48, bar 54..74, reset 82..110.
+        L.usage_bar_y     = 54;
+        L.bar_h           = 20;
+        L.usage_reset_y   = 82;
+        L.anim_font       = &font_mono_18;
+        L.anim_y          = -82;
+        L.detail_font     = &font_styrene_20;
+        L.footer_font     = &font_styrene_16;
+        L.footer_y        = 0;
+    }
+
+    // Panel placement is derived, not per-breakpoint: every existing board
+    // stacks, and wide landscape panels (the LCD-4.3) go side by side. Pinned
+    // by test/test_usage_layout/.
+    // Panels use their own margin so a wide screen becomes margin rather than
+    // a stretched panel; everything else still uses L.margin.
+    if (L.panel_margin == 0) L.panel_margin = L.margin;
+    L.slots = usage_compute_slots(L.scr_w, L.scr_h, L.panel_margin, L.content_y,
+                                  L.usage_panel_h, L.usage_panel_gap);
+
+    // Boards with no readable physical button get on-screen HID controls.
+    // The LCD-4.3 is the first: GPIO 0 is an RGB data line there, so BOOT
+    // cannot be read. Gated on the runtime capability, never on board name.
+    L.soft_buttons = (c.button_count == 0);
+    // Five keys across 800 px with 20 px margins: 5*142 + 4*12 = 758.
+    L.softbtn_w    = L.rich_info ? 142 : 200;
+    L.softbtn_h    = L.rich_info ? 56 : 72;
+    L.softbtn_gap  = L.rich_info ? 12 : 24;
+    // Raised clear of the status line, which sits at anim_y from the bottom.
+    L.softbtn_y    = L.rich_info ? -16 : -68;
+    L.softbtn_font = L.rich_info ? &font_styrene_24 : &font_styrene_28;
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -205,6 +298,64 @@ static lv_obj_t* bar_session;
 static lv_obj_t* lbl_session_pct;
 static lv_obj_t* lbl_session_label;
 static lv_obj_t* lbl_session_reset;
+// Rich-info extras (wide landscape only; NULL elsewhere)
+static lv_obj_t* lbl_session_detail = nullptr;
+static lv_obj_t* lbl_weekly_detail  = nullptr;
+static lv_obj_t* lbl_footer         = nullptr;
+static lv_obj_t* lbl_corner_clock   = nullptr;
+
+// ---- Extra pages (rich_info boards only; NULL elsewhere) ----
+static lv_obj_t* arc_session = nullptr;   // radial gauges, rich_info only
+static lv_obj_t* arc_weekly  = nullptr;
+static lv_obj_t* limits_container = nullptr;
+static lv_obj_t* system_container = nullptr;
+// The soft key deck lives in its own screen-level container rather than inside
+// any one page, so the keys stay reachable on every page instead of only the
+// usage view. See build_key_deck().
+static lv_obj_t* keys_container = nullptr;
+
+// ---- Activity heatmap ----
+// 168 cells rendered into ONE canvas rather than 168 LVGL objects: each object
+// costs ~100 bytes plus per-frame layout, and a grid is exactly the case a
+// canvas is for. The buffer lives in PSRAM and is repainted only when a new
+// payload lands.
+#define HEAT_COLS 24
+#define HEAT_ROWS 7
+#define HEAT_CELL 24      // filled square
+#define HEAT_PITCH 28     // cell + gap
+static lv_obj_t*  activity_container = nullptr;
+static lv_obj_t*  heat_canvas = nullptr;
+static uint16_t*  heat_buf = nullptr;
+static lv_obj_t*  lbl_heat_today = nullptr;
+static lv_obj_t*  lbl_heat_days[HEAT_ROWS] = {nullptr};
+// Two columns of key/value rows per page, refreshed in place so the pages cost
+// no allocation after ui_init.
+#define PAGE_ROWS 12
+// First row / chart top on the extra pages. Clears the title (which runs to
+// roughly y=86 at title_font) rather than reusing the usage page's content_y,
+// which is tuned around the gauges and sits high enough to cut the descenders.
+#define PAGE_TOP 100
+static lv_obj_t* limits_rows[PAGE_ROWS] = {nullptr};
+// History chart. LVGL's shift update mode owns the ring buffer, so there's no
+// separate sample array to keep in step — one push per payload and the oldest
+// point falls off the left edge. 120 points at the daemon's 60s cadence is
+// about two hours of shape.
+#define HIST_POINTS 120
+static lv_obj_t*         hist_chart = nullptr;
+static lv_chart_series_t* hist_session_ser = nullptr;
+static lv_chart_series_t* hist_weekly_ser  = nullptr;
+static lv_obj_t*          hist_hint = nullptr;   // "collecting" until a line exists
+static uint16_t           hist_samples = 0;
+static lv_obj_t* system_rows[PAGE_ROWS] = {nullptr};
+// Whole last payload, kept so the Limits page can re-render on its own cadence
+// without the caller having to push data at it.
+static UsageData s_last_data = {};
+// Cached from the last payload so ui_tick_anim can rebuild the footer string
+// every second without keeping a pointer to the caller's UsageData. Freshness
+// reuses the existing last_data_ms below, which update_view_state already
+// maintains for its staleness check.
+static bool      s_last_enterprise  = false;
+static char      s_last_status[16]  = "";
 static lv_obj_t* bar_weekly;
 static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
@@ -293,12 +444,6 @@ static const char* const anim_messages[] = {
 };
 #define ANIM_MSG_COUNT (sizeof(anim_messages) / sizeof(anim_messages[0]))
 
-static lv_color_t pct_color(float pct) {
-    if (pct >= 80.0f) return COL_RED;
-    if (pct >= 50.0f) return COL_AMBER;
-    return COL_GREEN;
-}
-
 static void format_reset_time(int mins, char* buf, size_t len) {
     if (mins < 0) {
         snprintf(buf, len, "---");
@@ -311,8 +456,57 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     }
 }
 
+// Rich-info detail line: how fast the budget is being spent relative to how
+// much of the window has elapsed. A 5h window 60% gone with 4% used is very
+// different from 4% used 5 minutes in, and the bare percentage can't say which.
+// Colours match the enterprise pace verdict so the two views read alike.
+static void format_pace_detail(float used_pct, int remaining_mins, int window_mins,
+                               char* buf, size_t len) {
+    if (remaining_mins < 0 || window_mins <= 0) {
+        snprintf(buf, len, " ");   // window length unknown — say nothing
+        return;
+    }
+    int elapsed = window_mins - remaining_mins;
+    if (elapsed < 0)           elapsed = 0;
+    if (elapsed > window_mins) elapsed = window_mins;
+    const int elapsed_pct = (int)((long)elapsed * 100 / window_mins);
+
+    const char* verdict;
+    const char* hex;
+    if (used_pct < (float)elapsed_pct - 10.0f)      { verdict = "Under pace"; hex = "788c5d"; }
+    else if (used_pct > (float)elapsed_pct + 10.0f) { verdict = "Over pace";  hex = "c0392b"; }
+    else                                            { verdict = "On pace";    hex = "d97757"; }
+
+    // Window label derived from the length itself, so it always matches
+    // whatever the API declared rather than a second hardcoded string.
+    char wlabel[8];
+    if (window_mins % 1440 == 0)   snprintf(wlabel, sizeof(wlabel), "%dd", window_mins / 1440);
+    else if (window_mins % 60 == 0) snprintf(wlabel, sizeof(wlabel), "%dh", window_mins / 60);
+    else                            snprintf(wlabel, sizeof(wlabel), "%dm", window_mins);
+
+    // The verdict now sits in the text column beside the dial, which has room
+    // for the elapsed figure it is derived from — so every board prints the
+    // full sentence again.
+    snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
+}
+
+// Gauge tint by pace rather than absolute level. Window length comes from the
+// daemon (pulled from the API's header naming); when it's unknown we fall back
+// to a neutral accent rather than implying a verdict we can't support.
+static lv_color_t pace_color_for(float used_pct, int remaining_mins, int window_mins) {
+    if (window_mins <= 0 || remaining_mins < 0) return COL_ACCENT;
+    int elapsed = window_mins - remaining_mins;
+    if (elapsed < 0)           elapsed = 0;
+    if (elapsed > window_mins) elapsed = window_mins;
+    const int elapsed_pct = (int)((long)elapsed * 100 / window_mins);
+    if (used_pct < (float)elapsed_pct - 10.0f) return COL_GREEN;
+    if (used_pct > (float)elapsed_pct + 10.0f) return COL_RED;
+    return COL_AMBER;
+}
+
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
+static void refresh_activity(void);   // defined with the heatmap renderer below
 
 static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_t* panel = lv_obj_create(parent);
@@ -388,26 +582,62 @@ static void init_battery_icons(void) {
 
 // ======== Usage Screen ========
 
-static lv_obj_t* make_usage_panel(lv_obj_t* parent, int y, const char* pill_text,
+static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
+                                  const char* pill_text,
                                   lv_obj_t** out_pct, lv_obj_t** out_pill,
-                                  lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, L.margin, y, L.content_w, L.usage_panel_h);
+                                  lv_obj_t** out_bar, lv_obj_t** out_reset,
+                                  lv_obj_t** out_arc) {
+    lv_obj_t* panel = make_panel(parent, x, y, w, L.usage_panel_h);
 
-    *out_pct = lv_label_create(panel);
-    lv_label_set_text(*out_pct, "---%");
-    lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
-    lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
-    lv_obj_set_pos(*out_pct, 0, 0);
 
     *out_pill = make_pill(panel, pill_text);
+    // Caption heads the text column beside the dial on rich boards.
     lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
-    *out_bar = make_bar(panel, 0, L.usage_bar_y,
-                        L.content_w - 2 * L.panel_pad_x, L.bar_h);
+    if (L.use_arcs) {
+        // Radial gauge instead of a bar. On a wide panel a 340 px track showing
+        // 5% is mostly empty pixels; a dial reads as a filled proportion at a
+        // glance and puts the number where the eye already is — in the middle.
+        // The bar is not created at all here, so every bar call site is guarded.
+        lv_obj_t* arc = lv_arc_create(panel);
+        lv_obj_set_size(arc, L.arc_size, L.arc_size);
+        lv_obj_align(arc, LV_ALIGN_LEFT_MID, 0, 0);   // dial on the left
+        lv_arc_set_range(arc, 0, 100);
+        lv_arc_set_value(arc, 0);
+        lv_arc_set_bg_angles(arc, 135, 45);   // 270-degree sweep, gap at the bottom
+        lv_obj_remove_style(arc, NULL, LV_PART_KNOB);      // display only, no handle
+        lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);     // taps belong to the page
+        lv_obj_set_style_arc_width(arc, 16, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(arc, 16, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(arc, COL_BAR_BG, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(arc, COL_GREEN, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
+
+        // The percentage is a CHILD of the arc and centred within it. Aligning
+        // a sibling to the arc computes coordinates before LVGL has laid the
+        // arc out, which left the digits clipped.
+        *out_pct = lv_label_create(arc);
+        lv_label_set_text(*out_pct, "--%");
+        lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
+        lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
+        lv_obj_center(*out_pct);   // the dial is small now; the number fills it
+
+        *out_bar = nullptr;
+        *out_arc = arc;
+    } else {
+        *out_pct = lv_label_create(panel);
+        lv_label_set_text(*out_pct, "---%");
+        lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
+        lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
+        lv_obj_set_pos(*out_pct, 0, 0);
+        *out_bar = make_bar(panel, 0, L.usage_bar_y,
+                            w - 2 * L.panel_pad_x, L.bar_h);
+        *out_arc = nullptr;
+    }
 
     *out_reset = lv_label_create(panel);
     lv_label_set_text(*out_reset, "---");
-    lv_obj_set_style_text_font(*out_reset, L.reset_font, 0);
+    lv_obj_set_style_text_font(*out_reset, L.rich_info ? L.detail_font : L.reset_font, 0);
     lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
     lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
 
@@ -469,6 +699,136 @@ static void build_idle_group(lv_obj_t* parent) {
     lv_obj_add_flag(idle_group, LV_OBJ_FLAG_HIDDEN);  // update_view_state decides
 }
 
+// ---- On-screen HID controls ----
+// Boards that report button_count == 0 have no readable physical button — the
+// LCD-4.3 is the first, because GPIO 0 is an RGB data line there and so the
+// BOOT strap pin is an LCD output at runtime. These mirror main.cpp's
+// physical-button handling exactly: PTT holds Space for as long as the finger
+// is down, mode-toggle sends Shift+Tab.
+
+// The on-screen key deck. TALK and MODE are the modal keys (hold to talk,
+// cycle mode); ESC, ENTER and UP are the imperatives you reach for while
+// Claude is already working — interrupt it, approve a prompt, recall the last
+// one. Adding a key is a row here, not new code.
+//
+// Values are USB HID usage IDs; the modifier byte is the standard bitmask
+// (0x02 = left shift).
+struct SoftKey {
+    const char* label;
+    uint8_t     key;
+    uint8_t     mod;
+};
+static const SoftKey SOFT_KEYS[] = {
+    { "TALK",  0x2C, 0x00 },   // Space — held for voice-mode push-to-talk
+    { "ESC",   0x29, 0x00 },   // Escape — interrupt a running response
+    { "ENTER", 0x28, 0x00 },   // Return — approve a permission prompt
+    { "UP",    0x52, 0x00 },   // Up arrow — recall the previous prompt
+    { "MODE",  0x2B, 0x02 },   // Shift+Tab — cycle Claude Code's mode
+};
+#define SOFT_KEY_COUNT ((int)(sizeof(SOFT_KEYS) / sizeof(SOFT_KEYS[0])))
+
+// One callback for every key: press on down, release on up, exactly mirroring
+// how main.cpp drives physical buttons. Holding TALK therefore holds Space,
+// which is what push-to-talk requires.
+static void soft_key_cb(lv_event_t* e) {
+    const SoftKey* k = (const SoftKey*)lv_event_get_user_data(e);
+    if (!k) return;
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED)       ble_keyboard_press(k->key, k->mod);
+    else if (code == LV_EVENT_RELEASED) ble_keyboard_release();
+}
+
+// Build one pill-shaped control. Not marked EVENT_BUBBLE, so its clicks never
+// reach usage_container's global_click_cb and toggle the splash screen.
+static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
+                                  lv_align_t align, int16_t dx,
+                                  lv_event_cb_t cb, const void* user_data) {
+    lv_obj_t* btn = lv_obj_create(parent);
+    lv_obj_set_size(btn, L.softbtn_w, L.softbtn_h);
+    lv_obj_align(btn, align, dx, L.softbtn_y);
+    lv_obj_set_style_bg_color(btn, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_radius(btn, L.softbtn_h / 2, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, L.softbtn_font, 0);
+    lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
+    lv_obj_center(lbl);
+
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_PRESSED, (void*)user_data);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_RELEASED, (void*)user_data);
+    return btn;
+}
+
+// ---- Extra pages ----------------------------------------------------------
+// Both are the same shape: a title, then PAGE_ROWS text rows laid out in two
+// columns. Rows are created once and rewritten in place, so paging costs no
+// allocation. Built only when L.rich_info — narrow boards have no room and
+// their navigation stays splash<->usage.
+
+static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
+    // A full-screen detail page, reached by tapping past the usage view. It
+    // is deliberately NOT on the default screen: the main view stays the
+    // canonical Clawdmeter layout and this carries everything that would
+    // otherwise clutter it.
+    lv_obj_t* page = lv_obj_create(scr);
+    lv_obj_set_size(page, L.scr_w, L.scr_h);
+    lv_obj_set_pos(page, 0, 0);
+    lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(page, 0, 0);
+    lv_obj_set_style_pad_all(page, 0, 0);
+    // Clearing SCROLLABLE is sufficient: lv_obj_get_scrollbar_area() returns
+    // immediately for a non-scrollable object, so no bar is ever computed.
+    // (An earlier comment here claimed otherwise and added a redundant
+    // scrollbar-mode call — both were chasing a hairline that actually came
+    // from the SCREEN's scrollbar, not the page's. See ui_init.)
+    lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(page, global_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* t = lv_label_create(page);
+    lv_label_set_text(t, title);
+    lv_obj_set_style_text_font(t, &font_tiempos_34, 0);
+    lv_obj_set_style_text_color(t, COL_TEXT, 0);
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 16);
+
+    // Two columns across the full width: usage analysis on the left, device
+    // diagnostics on the right.
+    const int16_t col_w   = (L.scr_w - 2 * L.margin - L.usage_panel_gap) / 2;
+    const int16_t row_h   = 27;
+    const int16_t rows_y  = PAGE_TOP + 150;   // below the chart
+    const int16_t per_col = PAGE_ROWS / 2;
+    for (int i = 0; i < PAGE_ROWS; ++i) {
+        lv_obj_t* r = lv_label_create(page);
+        lv_label_set_recolor(r, true);
+        lv_label_set_text(r, "");
+        // Smaller than the usage page's detail font: these rows carry long
+        // API-sourced values like "rejected (org level disabled)" that reach
+        // the panel edge at 20 px.
+        lv_obj_set_style_text_font(r, &font_styrene_16, 0);
+        lv_obj_set_style_text_color(r, COL_DIM, 0);
+        const bool right = (i >= per_col);
+        lv_obj_set_pos(r, (int16_t)(L.margin + (right ? col_w + L.usage_panel_gap : 0)),
+                          (int16_t)(rows_y + (right ? i - per_col : i) * row_h));
+        rows[i] = r;
+    }
+    return page;
+}
+
+// "#hex label# value" — the label tinted, the value in primary text, so a row
+// scans as one line without needing two widgets.
+static void set_row(lv_obj_t* row, const char* label, const char* value) {
+    if (!row) return;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "#b0aea5 %s#  #faf9f5 %s#", label, value);
+    lv_label_set_text(row, buf);
+}
+
 static void init_usage_screen(lv_obj_t* scr) {
     usage_container = lv_obj_create(scr);
     lv_obj_set_size(usage_container, L.scr_w, L.scr_h);
@@ -498,9 +858,10 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    panel_session = make_usage_panel(usage_group, L.content_y, "Current",
+    panel_session = make_usage_panel(usage_group, L.slots.p1_x, L.slots.p1_y,
+                     L.slots.panel_w, "Current",
                      &lbl_session_pct, &lbl_session_label,
-                     &bar_session, &lbl_session_reset);
+                     &bar_session, &lbl_session_reset, &arc_session);
 
     // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
     lbl_session_pct_sym = lv_label_create(panel_session);
@@ -522,12 +883,38 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_pos(lbl_spending_status, 0, L.usage_reset_y + 20);
     lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
 
-    panel_weekly = make_usage_panel(usage_group,
-                     L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
+    panel_weekly = make_usage_panel(usage_group, L.slots.p2_x, L.slots.p2_y,
+                     L.slots.panel_w, "Weekly",
                      &lbl_weekly_pct, &lbl_weekly_label,
-                     &bar_weekly, &lbl_weekly_reset);
+                     &bar_weekly, &lbl_weekly_reset, &arc_weekly);
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
+
+    // Rich-info extras: a pace/detail line inside each panel and a footer strip.
+    // Recolor is on so the pace verdict can be tinted without extra widgets.
+    if (L.rich_info) {
+        // No pace line and no footer on the main view. The official layout is
+        // percentage, pill, bar and reset — nothing else. The pace verdict,
+        // burn rate and diagnostics all live on the detail page, one tap away,
+        // so the screen you actually glance at stays uncluttered.
+        lbl_session_detail = nullptr;
+        lbl_weekly_detail  = nullptr;
+
+        // No footer strip on the usage page: the gauge layout needs the height,
+        // and the System page already reports status and data freshness. All
+        // footer call sites are NULL-guarded, so leaving it unbuilt is enough.
+        lbl_footer = nullptr;
+
+        // Clock in the top-right. On narrow boards the clock replaces the
+        // title, because there is nowhere else for it; here the battery slot
+        // is free (this board has no battery telemetry) so we can show both
+        // the title and the time. Stays empty until the daemon opts in by
+        // sending wall-clock fields — see read_clock_setting() daemon-side.
+        // No corner clock: in the official design the clock REPLACES the
+        // title, centred, and that is what every other board does. All clock
+        // call sites fall back to lbl_title when this is NULL.
+        lbl_corner_clock = nullptr;
+    }
 
     build_pair_group(usage_container);
     build_idle_group(usage_container);
@@ -538,6 +925,49 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_anim, L.anim_font, 0);
     lv_obj_set_style_text_color(lbl_anim, COL_ACCENT, 0);
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+    // The split dashboard has no spare row for the animated status line: the
+    // panes reach the button deck. Hidden rather than deleted so every
+    // ui_tick_anim call site stays valid and narrow boards keep it.
+
+}
+
+// The key deck is the board's only keyboard, so it belongs to the device
+// rather than to one page. Parented to the screen — not to usage_container —
+// so it survives page changes: on a board with no physical buttons, paging to
+// Detail or Activity used to take TALK and MODE away with it, and left a bare
+// strip of background where the deck had been.
+//
+// Built last so it sits above every page container, and left non-clickable so
+// a tap in the gaps between keys still falls through to the page beneath and
+// cycles as before.
+//
+// Centred as one deck rather than pinned to the left and right edges. Edge
+// pinning is a portrait-screen habit and here it put TALK at x 20..220,
+// straight through the board's PWR hot corner (x < 72) — and because
+// touch_hal_read() hides that corner from LVGL, TALK's left third would have
+// been silently dead, cycling brightness instead of sending Space. Centred,
+// the deck spans x 188..612 on an 800 px panel, clear of both corners.
+static void build_key_deck(lv_obj_t* scr) {
+    if (!L.soft_buttons) return;
+
+    keys_container = lv_obj_create(scr);
+    lv_obj_set_size(keys_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(keys_container, 0, 0);
+    lv_obj_set_style_bg_opa(keys_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(keys_container, 0, 0);
+    lv_obj_set_style_pad_all(keys_container, 0, 0);
+    lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(keys_container, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_CLICKABLE);
+
+    // Key i sits (i - centre) steps either side of the middle, so the row
+    // stays centred whatever SOFT_KEY_COUNT is.
+    const int16_t step = (int16_t)(L.softbtn_w + L.softbtn_gap);
+    for (int i = 0; i < SOFT_KEY_COUNT; ++i) {
+        const int16_t dx = (int16_t)((i - (SOFT_KEY_COUNT - 1) / 2.0f) * step);
+        make_soft_button(keys_container, SOFT_KEYS[i].label,
+                         LV_ALIGN_BOTTOM_MID, dx, soft_key_cb, &SOFT_KEYS[i]);
+    }
 }
 
 // ======== Public API ========
@@ -546,6 +976,17 @@ void ui_init(void) {
     compute_layout(board_caps());
 
     lv_obj_t* scr = lv_screen_active();
+
+    // The screen must never be scrollable. The mascot is a direct child of it
+    // and deliberately parks ~27 px past the right edge while still visible
+    // during walk-off trips (splash.cpp: mas_x = mas_screen_w before
+    // MAS_WALK_IN). lv_obj_get_scroll_right() counts any visible, non-floating
+    // child, so that overhang makes the screen horizontally scrollable and the
+    // default LV_SCROLLBAR_MODE_AUTO paints a 4 px bar across y=470..473 —
+    // which reads as a stray hairline at the bottom of whichever page happens
+    // to be showing. It also means a drag on the background could shift the
+    // whole UI sideways. Nothing here is ever meant to scroll.
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
@@ -557,6 +998,114 @@ void ui_init(void) {
     init_battery_icons();
 
     init_usage_screen(scr);
+    if (L.rich_info) {
+        limits_container = make_page(scr, "Detail", limits_rows);
+
+        // ---- Activity screen ----
+        activity_container = lv_obj_create(scr);
+        lv_obj_set_size(activity_container, L.scr_w, L.scr_h);
+        lv_obj_set_pos(activity_container, 0, 0);
+        lv_obj_set_style_bg_opa(activity_container, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(activity_container, 0, 0);
+        lv_obj_set_style_pad_all(activity_container, 0, 0);
+        lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(activity_container, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_event_cb(activity_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* at = lv_label_create(activity_container);
+        lv_label_set_text(at, "Activity");
+        lv_obj_set_style_text_font(at, &font_tiempos_34, 0);
+        lv_obj_set_style_text_color(at, COL_TEXT, 0);
+        lv_obj_align(at, LV_ALIGN_TOP_MID, 0, 16);
+
+        const int16_t grid_x = 84, grid_y = 96;
+        // Hour ruler every 4 hours — 24 labels would be unreadable at this pitch.
+        for (int h = 0; h < HEAT_COLS; h += 4) {
+            lv_obj_t* hl = lv_label_create(activity_container);
+            char hb[4]; snprintf(hb, sizeof(hb), "%d", h);
+            lv_label_set_text(hl, hb);
+            lv_obj_set_style_text_font(hl, &font_styrene_14, 0);
+            lv_obj_set_style_text_color(hl, COL_DIM, 0);
+            lv_obj_set_pos(hl, grid_x + h * HEAT_PITCH, grid_y - 22);
+        }
+        for (int r = 0; r < HEAT_ROWS; ++r) {
+            lv_obj_t* dl = lv_label_create(activity_container);
+            lv_label_set_text(dl, "");
+            lv_obj_set_style_text_font(dl, &font_styrene_16, 0);
+            lv_obj_set_style_text_color(dl, COL_DIM, 0);
+            lv_obj_set_pos(dl, L.margin, grid_y + r * HEAT_PITCH + 4);
+            lbl_heat_days[r] = dl;
+        }
+
+        const int hb_w = HEAT_COLS * HEAT_PITCH, hb_h = HEAT_ROWS * HEAT_PITCH;
+        heat_buf = (uint16_t*)heap_caps_malloc((size_t)hb_w * hb_h * 2, MALLOC_CAP_SPIRAM);
+        if (heat_buf) {
+            memset(heat_buf, 0, (size_t)hb_w * hb_h * 2);
+            heat_canvas = lv_canvas_create(activity_container);
+            lv_canvas_set_buffer(heat_canvas, heat_buf, hb_w, hb_h, LV_COLOR_FORMAT_RGB565);
+            lv_obj_set_pos(heat_canvas, grid_x, grid_y);
+        }
+
+        lbl_heat_today = lv_label_create(activity_container);
+        lv_label_set_text(lbl_heat_today, "no activity data yet");
+        lv_obj_set_style_text_font(lbl_heat_today, &font_styrene_20, 0);
+        lv_obj_set_style_text_color(lbl_heat_today, COL_DIM, 0);
+        lv_obj_align(lbl_heat_today, LV_ALIGN_TOP_MID, 0, grid_y + hb_h + 24);
+        system_container = nullptr;   // merged into the one detail page
+
+        // Trend chart above the stat rows. A percentage tells you where you
+        // are; the shape tells you how you got there and where it's going,
+        // which is the thing a single number genuinely cannot show.
+        hist_chart = lv_chart_create(limits_container);
+        lv_obj_set_size(hist_chart, L.scr_w - 2 * L.margin, 132);
+        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, PAGE_TOP);
+        lv_chart_set_type(hist_chart, LV_CHART_TYPE_LINE);
+        lv_chart_set_point_count(hist_chart, HIST_POINTS);
+        lv_chart_set_range(hist_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+        lv_chart_set_update_mode(hist_chart, LV_CHART_UPDATE_MODE_SHIFT);
+        lv_chart_set_div_line_count(hist_chart, 5, 0);
+        lv_obj_set_style_bg_color(hist_chart, COL_PANEL, 0);
+        lv_obj_set_style_border_width(hist_chart, 0, 0);
+        lv_obj_set_style_radius(hist_chart, 12, 0);
+        lv_obj_set_style_line_color(hist_chart, COL_BAR_BG, LV_PART_MAIN);
+        lv_obj_set_style_size(hist_chart, 0, 0, LV_PART_INDICATOR);  // line only, no dots
+        lv_obj_clear_flag(hist_chart, LV_OBJ_FLAG_CLICKABLE);        // taps page forward
+        lv_obj_set_scrollbar_mode(hist_chart, LV_SCROLLBAR_MODE_OFF);
+        hist_session_ser = lv_chart_add_series(hist_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+        hist_weekly_ser  = lv_chart_add_series(hist_chart, COL_GREEN,  LV_CHART_AXIS_PRIMARY_Y);
+
+        // Replay whatever survived the last power cycle, oldest first, so the
+        // chart opens with real history instead of a blank panel.
+        history_init();
+        const uint16_t restored = history_count();
+        for (uint16_t i = 0; i < restored; ++i) {
+            uint8_t sp = 0, wp = 0;
+            if (!history_get(i, &sp, &wp)) break;
+            lv_chart_set_next_value(hist_chart, hist_session_ser, sp);
+            lv_chart_set_next_value(hist_chart, hist_weekly_ser,  wp);
+        }
+        hist_samples = restored;
+
+        // Shown only until there are two points to draw a line between. Never
+        // seed the series with the current value to fill the gap — a flat line
+        // would imply hours of history we do not have.
+        hist_hint = lv_label_create(limits_container);
+        lv_label_set_text(hist_hint, "collecting - one point per minute");
+        lv_obj_set_style_text_font(hist_hint, L.detail_font, 0);
+        lv_obj_set_style_text_color(hist_hint, COL_DIM, 0);
+        lv_obj_align_to(hist_hint, hist_chart, LV_ALIGN_CENTER, 0, 0);
+
+        // The chart takes the space make_page gave the rows, so re-lay the
+        // first four beneath it (2x2) and hide the rest. Four is deliberate:
+        // these are the figures that say something the chart doesn't.
+        for (int i = 0; i < PAGE_ROWS; ++i) {
+            if (i < PAGE_ROWS) {
+            } else {
+                lv_obj_add_flag(limits_rows[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
     splash_init(scr);
 
     if (splash_get_root()) {
@@ -588,6 +1137,9 @@ void ui_init(void) {
         lv_obj_del(battery_img);
         battery_img = nullptr;
     }
+
+    // Last, so the deck layers above every page container built above.
+    build_key_deck(scr);
 }
 
 void ui_update(const UsageData* data) {
@@ -650,8 +1202,27 @@ void ui_update(const UsageData* data) {
         lv_label_set_text(lbl_session_reset, buf);
     }
 
-    lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
-    lv_obj_set_style_bg_color(bar_session, pct_color(data->session_pct), LV_PART_INDICATOR);
+    if (bar_session) {
+        lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
+        // Pace, not absolute level — same rule the arc below uses. A bar that
+        // colours on the raw percentage answers "how much have I used", which
+        // the number beside it already says; colouring on pace answers "am I
+        // going to run out", which nothing else on this screen tells you.
+        lv_obj_set_style_bg_color(bar_session,
+            pace_color_for(data->session_pct, data->session_reset_mins,
+                           data->session_window_mins),
+            LV_PART_INDICATOR);
+    }
+    if (arc_session) {
+        lv_arc_set_value(arc_session, s_pct);
+        // Tint by pace, not by absolute level: 40% used is fine 90% into the
+        // window and alarming 10% in. The dial then answers "am I ahead or
+        // behind" at a glance, which the raw percentage cannot.
+        lv_obj_set_style_arc_color(arc_session,
+            pace_color_for(data->session_pct, data->session_reset_mins,
+                           data->session_window_mins),
+            LV_PART_INDICATOR);
+    }
 
     if (data->enterprise) {
         // Period box: time % + dynamic pace color + "Resets <date>" label
@@ -668,11 +1239,192 @@ void ui_update(const UsageData* data) {
     } else {
         int w_pct = (int)(data->weekly_pct + 0.5f);
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", w_pct);
-        lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
-        lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
+        if (bar_weekly) {
+            lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
+            lv_obj_set_style_bg_color(bar_weekly,
+                pace_color_for(data->weekly_pct, data->weekly_reset_mins,
+                               data->weekly_window_mins),
+                LV_PART_INDICATOR);
+        }
+        if (arc_weekly) {
+            lv_arc_set_value(arc_weekly, w_pct);
+            lv_obj_set_style_arc_color(arc_weekly,
+                pace_color_for(data->weekly_pct, data->weekly_reset_mins,
+                               data->weekly_window_mins),
+                LV_PART_INDICATOR);
+        }
         format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
     }
+
+    // Rich-info extras. Enterprise already carries its own pace verdict in the
+    // period box, so the per-panel detail is Pro/Max only; the footer applies
+    // to both.
+    s_last_data = *data;
+    // One point per payload; LVGL shifts the oldest off the left edge.
+    if (hist_chart) {
+        const uint8_t sp = (uint8_t)(data->session_pct + 0.5f);
+        const uint8_t wp = (uint8_t)(data->weekly_pct + 0.5f);
+        lv_chart_set_next_value(hist_chart, hist_session_ser, sp);
+        lv_chart_set_next_value(hist_chart, hist_weekly_ser,  wp);
+        history_push(sp, wp);   // persistence is rate-limited inside the store
+        if (hist_samples < 0xFFFF) hist_samples++;
+        // Two points make a line; below that the chart has nothing to show.
+        if (hist_hint && hist_samples >= 2) lv_obj_add_flag(hist_hint, LV_OBJ_FLAG_HIDDEN);
+    }
+    refresh_activity();
+    s_last_enterprise = data->enterprise;
+    strlcpy(s_last_status, data->status, sizeof(s_last_status));
+    if (lbl_session_detail && !data->enterprise) {
+        // Window lengths are supplied by the daemon (parsed from the API's own
+        // header names), never assumed here. A 0 means the API named a window
+        // we don't recognise, in which case format_pace_detail blanks the line
+        // rather than printing a confident wrong percentage.
+        format_pace_detail(data->session_pct, data->session_reset_mins,
+                           data->session_window_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_session_detail, buf);
+        format_pace_detail(data->weekly_pct, data->weekly_reset_mins,
+                           data->weekly_window_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_weekly_detail, buf);
+    }
+    if (lbl_footer) {
+        // No tier label for non-enterprise accounts. The daemon hardcodes
+        // "acct":"pro" to mean "not an enterprise spending-limit account", and
+        // neither it nor ~/.claude.json can distinguish Pro from Max (seatTier
+        // is null, billingType is just "stripe_subscription"). Printing "Pro"
+        // would be a guess shown as a fact to every Max subscriber.
+        snprintf(buf, sizeof(buf), "%s%s - updated just now",
+                 data->enterprise ? "Enterprise - " : "", data->status);
+        lv_label_set_text(lbl_footer, buf);
+    }
+}
+
+// Paint one heatmap cell straight into the canvas buffer. Intensity 0..9 is
+// interpolated from the bar track colour to the brand accent, so an idle hour
+// reads as background and a busy one as a solid block.
+static void heat_fill_cell(int col, int row, uint8_t level) {
+    if (!heat_buf) return;
+    const int bw = HEAT_COLS * HEAT_PITCH;
+    const uint16_t lo_r = 0x2a >> 3, lo_g = 0x2a >> 2, lo_b = 0x28 >> 3;   // COL_BAR_BG
+    const uint16_t hi_r = 0xd9 >> 3, hi_g = 0x77 >> 2, hi_b = 0x57 >> 3;   // COL_ACCENT
+    const uint16_t r = (uint16_t)(lo_r + ((hi_r - lo_r) * level) / 9);
+    const uint16_t g = (uint16_t)(lo_g + ((hi_g - lo_g) * level) / 9);
+    const uint16_t b = (uint16_t)(lo_b + ((hi_b - lo_b) * level) / 9);
+    const uint16_t c = (uint16_t)((r << 11) | (g << 5) | b);
+    const int x0 = col * HEAT_PITCH, y0 = row * HEAT_PITCH;
+    for (int y = 0; y < HEAT_CELL; ++y) {
+        uint16_t* p = heat_buf + (size_t)(y0 + y) * bw + x0;
+        for (int x = 0; x < HEAT_CELL; ++x) p[x] = c;
+    }
+}
+
+// Repaint the activity grid from the latest payload.
+static void refresh_activity(void) {
+    if (!heat_canvas) return;
+    static const char* WD[7] = {"Mon","Tue","Wed","Thu","Fri","Sat","Sun"};
+    const UsageData* d = &s_last_data;
+
+    for (int row = 0; row < HEAT_ROWS; ++row) {
+        for (int col = 0; col < HEAT_COLS; ++col) {
+            const uint8_t lvl = d->heat_valid ? d->heat[row * HEAT_COLS + col] : 0;
+            heat_fill_cell(col, row, lvl);
+        }
+        if (lbl_heat_days[row]) {
+            lv_label_set_text(lbl_heat_days[row],
+                              WD[(d->heat_first_weekday + row) % 7]);
+        }
+    }
+    lv_obj_invalidate(heat_canvas);
+
+    if (lbl_heat_today) {
+        char v[64];
+        if (!d->heat_valid) {
+            snprintf(v, sizeof(v), "no activity data yet");
+        } else if (d->tokens_today_k >= 1000) {
+            snprintf(v, sizeof(v), "today  %d.%dM tokens - %d sessions",
+                     d->tokens_today_k / 1000, (d->tokens_today_k % 1000) / 100,
+                     d->sessions_today);
+        } else {
+            snprintf(v, sizeof(v), "today  %dK tokens - %d sessions",
+                     d->tokens_today_k, d->sessions_today);
+        }
+        lv_label_set_text(lbl_heat_today, v);
+    }
+}
+
+// Repaint the Limits and System pages. Driven from ui_tick_anim rather than
+// ui_update so the live figures (uptime, data age, projections) keep moving
+// between the daemon's 60s payloads — a frozen diagnostic page is worse than
+// none, because it looks authoritative.
+static void refresh_pages(void) {
+    if (!limits_container) return;
+    char v[64];
+    const UsageData* d = &s_last_data;
+
+    // ---- History: four figures the chart itself cannot show ----
+    if (d->valid) {
+        const float rate = usage_rate_pct_per_hour();
+        if (rate < 0.0f) snprintf(v, sizeof(v), "warming up");
+        else             snprintf(v, sizeof(v), "%d.%d %%/hr", (int)rate,
+                                  (int)((rate < 0 ? -rate : rate) * 10) % 10);
+        set_row(limits_rows[0], "Burn rate", v);
+
+        const int to_full = usage_rate_mins_to_full();
+        if (to_full == -1)      snprintf(v, sizeof(v), "warming up");
+        else if (to_full == -2) snprintf(v, sizeof(v), "steady, not climbing");
+        else if (to_full < 60)  snprintf(v, sizeof(v), "limit in %dm", to_full);
+        else                    snprintf(v, sizeof(v), "limit in %dh %dm", to_full / 60, to_full % 60);
+        set_row(limits_rows[1], "Projected", v);
+
+        // The API's own statement of which window is currently binding.
+        set_row(limits_rows[2], "Binding", d->claim[0] ? d->claim : "unknown");
+
+        if (d->overage[0]) {
+            if (d->overage_reason[0]) {
+                // API reasons arrive snake_cased ("org_level_disabled");
+                // humanise rather than reformat upstream's value.
+                char reason[24];
+                strlcpy(reason, d->overage_reason, sizeof(reason));
+                for (char* p = reason; *p; ++p) if (*p == '_') *p = ' ';
+                snprintf(v, sizeof(v), "%s (%s)", d->overage, reason);
+            } else {
+                snprintf(v, sizeof(v), "%s", d->overage);
+            }
+        } else snprintf(v, sizeof(v), "not reported");
+        set_row(limits_rows[3], "Overage", v);
+
+        set_row(limits_rows[4], "Status", d->status);
+        set_row(limits_rows[5], "Weekly", d->weekly_status[0] ? d->weekly_status : "-");
+    }
+
+    // ---- Right column: device + link diagnostics ----
+    const BoardCaps& c = board_caps();
+    set_row(limits_rows[6], "Board", c.name);
+
+    const uint32_t up_s = millis() / 1000;
+    if (up_s < 3600) snprintf(v, sizeof(v), "%lum %lus", (unsigned long)(up_s / 60), (unsigned long)(up_s % 60));
+    else             snprintf(v, sizeof(v), "%luh %lum", (unsigned long)(up_s / 3600), (unsigned long)((up_s % 3600) / 60));
+    set_row(limits_rows[7], "Uptime", v);
+
+    snprintf(v, sizeof(v), "%lu KB", (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    set_row(limits_rows[8], "Free RAM", v);
+#ifdef BOARD_HAS_PSRAM
+    snprintf(v, sizeof(v), "%lu KB", (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    set_row(limits_rows[9], "Free PSRAM", v);
+#else
+    set_row(limits_rows[9], "Free PSRAM", "none");
+#endif
+
+    set_row(limits_rows[10], "Link",
+            s_ble_connected ? ble_get_mac_address() : "disconnected");
+
+    if (last_data_ms == 0) snprintf(v, sizeof(v), "no data yet");
+    else {
+        const uint32_t age = (lv_tick_get() - last_data_ms) / 1000;
+        if (age < 90) snprintf(v, sizeof(v), "%lus ago", (unsigned long)age);
+        else          snprintf(v, sizeof(v), "%lum ago", (unsigned long)(age / 60));
+    }
+    set_row(limits_rows[11], "Updated", v);
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -699,11 +1451,44 @@ static void update_view_state(void) {
 }
 
 void ui_tick_anim(void) {
-    if (current_screen != SCREEN_USAGE) return;
+    // Every dashboard state shows the gauges, so they all need the usage
+    // animations AND the pane refresh — uptime, data age and the projection
+    // have to keep moving between the daemon's 60s payloads.
+    const bool dashboard = (current_screen == SCREEN_USAGE ||
+                            current_screen == SCREEN_LIMITS ||
+                            current_screen == SCREEN_SYSTEM ||
+                            current_screen == SCREEN_ACTIVITY);
+    if (!dashboard) return;
+
+    if (limits_container) {
+        static uint32_t pages_last_s = 0xFFFFFFFF;
+        const uint32_t s = lv_tick_get() / 1000;
+        if (s != pages_last_s) {
+            pages_last_s = s;
+            refresh_pages();
+        }
+    }
     update_view_state();
     if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
 
     uint32_t now = lv_tick_get();
+
+    // Footer freshness. Recomputed here rather than in ui_update so a stalled
+    // daemon is visible: the age keeps climbing instead of freezing at the last
+    // successful poll, which is the whole point of showing it.
+    if (lbl_footer && last_data_ms != 0) {
+        static uint32_t footer_last_s = 0xFFFFFFFF;
+        const uint32_t age_s = (now - last_data_ms) / 1000;
+        if (age_s != footer_last_s) {
+            footer_last_s = age_s;
+            const char* tier = s_last_enterprise ? "Enterprise - " : "";
+            char fbuf[64];
+            if (age_s < 5)        snprintf(fbuf, sizeof(fbuf), "%s%s - updated just now", tier, s_last_status);
+            else if (age_s < 90)  snprintf(fbuf, sizeof(fbuf), "%s%s - updated %lus ago", tier, s_last_status, (unsigned long)age_s);
+            else                  snprintf(fbuf, sizeof(fbuf), "%s%s - updated %lum ago", tier, s_last_status, (unsigned long)(age_s / 60));
+            lv_label_set_text(lbl_footer, fbuf);
+        }
+    }
 
     // Title clock: once the daemon has sent wall-clock time, replace "Usage" with
     // the live time, advanced locally so it ticks every minute between payloads.
@@ -722,7 +1507,9 @@ void ui_tick_anim(void) {
             } else {
                 snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
             }
-            lv_label_set_text(lbl_title, tbuf);
+            // Wide boards show the clock beside the title rather than instead
+            // of it — there is a free corner, so we don't have to choose.
+            lv_label_set_text(lbl_corner_clock ? lbl_corner_clock : lbl_title, tbuf);
         }
     }
 
@@ -765,18 +1552,52 @@ static void apply_battery_visibility(void) {
 
 static void global_click_cb(lv_event_t* e) {
     (void)e;
-    if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
-    else                                  ui_show_screen(SCREEN_SPLASH);
+    // Boards with the extra pages cycle through them; boards without keep the
+    // original two-state toggle, since limits_container is NULL there.
+    if (!limits_container) {
+        if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
+        else                                  ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+    // The gauges are always on screen in every dashboard state, so there is no
+    // separate "usage only" stop in the cycle — tapping just swaps the pane
+    // beside them, then returns to the splash.
+    switch (current_screen) {
+    case SCREEN_SPLASH: ui_show_screen(SCREEN_USAGE);  break;
+    case SCREEN_USAGE:  ui_show_screen(SCREEN_LIMITS);   break;
+    case SCREEN_LIMITS: ui_show_screen(SCREEN_ACTIVITY); break;
+    default:            ui_show_screen(SCREEN_SPLASH);   break;
+    }
 }
 
 void ui_show_screen(screen_t screen) {
+    // Requesting a page this board never built (narrow panels) falls back to
+    // the usage view rather than showing a blank screen.
+    if ((screen == SCREEN_LIMITS || screen == SCREEN_SYSTEM ||
+         screen == SCREEN_ACTIVITY) && !limits_container) {
+        screen = SCREEN_USAGE;
+    }
+
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    if (limits_container) lv_obj_add_flag(limits_container, LV_OBJ_FLAG_HIDDEN);
+    if (activity_container) lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_LIMITS:  lv_obj_clear_flag(limits_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_ACTIVITY: lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
+    }
+
+    // The deck follows the same rule as the mascot and logo: present on every
+    // page, hidden on the splash. splash.cpp pushes its frames straight to the
+    // panel and bypasses LVGL entirely, so anything left visible here would be
+    // painted over anyway — and would flicker back on the first LVGL redraw.
+    if (keys_container) {
+        if (screen == SCREEN_SPLASH) lv_obj_add_flag(keys_container, LV_OBJ_FLAG_HIDDEN);
+        else                         lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_HIDDEN);
     }
 
     splash_mascot_set_visible(screen != SCREEN_SPLASH);

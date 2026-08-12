@@ -25,6 +25,17 @@
 // screenshot (SIM_AUTOSHOT_PATH, default sim-autoshot.bmp) after <ms> and
 // exits.
 
-#define BOARD_NAME  "Simulator 480x480"
+// Geometry is overridable from the env's build_flags so one simulator can
+// stand in for any panel shape — see [env:sim_43], which emulates the
+// 800x480 LCD-4.3. That matters because the wide-landscape UI (arc gauges,
+// the History/System pages, the five-key deck) is gated on
+// `width >= 700 && width > height`, so a 480x480 sim can never render it.
+#ifndef LCD_WIDTH
 #define LCD_WIDTH   480
+#endif
+#ifndef LCD_HEIGHT
 #define LCD_HEIGHT  480
+#endif
+#ifndef BOARD_NAME
+#define BOARD_NAME  "Simulator 480x480"
+#endif

@@ -13,12 +13,18 @@ At minimum:
 - An **ESP32-S3** (other ESP32 family members may work; this is what the
   upstream firmware is tested on). OPI PSRAM is **required** — partial
   flush buffers and the splash canvas are allocated from PSRAM.
-- A QSPI **AMOLED panel** with a driver supported by
-  [GFX Library for Arduino](https://github.com/moononournation/Arduino_GFX)
-  (CO5300, SH8601, NV3041A, etc.). Other interfaces aren't supported yet.
+- A **display panel** with a driver supported by
+  [GFX Library for Arduino](https://github.com/moononournation/Arduino_GFX).
+  Three bus types are in the tree today: QSPI AMOLED (CO5300, SH8601), plain
+  4-wire SPI TFT (ST7789 on the LCD-1.54), and RGB parallel (the LCD-4.3,
+  where the ESP32-S3 LCD peripheral scans a PSRAM framebuffer). The HAL
+  surface is identical for all three.
 - A **touch controller** over I2C. The HAL just needs init + read; you
   can use any driver you can compile.
-- A **primary button** (typically the BOOT/GPIO 0 push button).
+- A **primary button** (typically the BOOT/GPIO 0 push button) — *or* none at
+  all. Some boards spend GPIO 0 on a display data line, which makes BOOT
+  unreadable at runtime; report `button_count = 0` and the UI builds
+  on-screen HID controls instead (see the LCD-4.3 port).
 
 Optional:
 
@@ -107,6 +113,19 @@ Optional:
   grab Waveshare's reference value from their `Mylibrary/pin_config.h`
   (or equivalent) and fine-tune ±1 if centering looks off. SH8601 panels
   don't have this issue.
+- **RGB parallel panel shows the wrong colours.** Vendor documentation often
+  labels the data lines by their position in an 8-bit-per-channel bus
+  (R3–R7 / G2–G7 / B3–B7) while Arduino_GFX names the same physical pins
+  R0–R4 / G0–G5 / B0–B4. Same wires, different convention. A whole channel
+  landing in the wrong place usually means the two got mixed. A sheared or
+  rolling image is timings instead; snow means the framebuffer never
+  allocated.
+- **No PWR button for the pairing gesture.** `power_hal` deliberately doesn't
+  say where a press comes from — the 2.16 uses a PMU IRQ, the 1.8 an IO
+  expander poll, the LCD-4.3 a touch hot corner. If your board has no button,
+  synthesise the events in `power.cpp` and the hold-to-pair gesture in
+  `main.cpp` keeps working unmodified. Suppress that region inside
+  `touch_hal_read()` so LVGL never sees the tap.
 - **Touch reads zeros / wrong coordinates.** The HAL hands LVGL whatever
   the controller reports — apply any axis swap / mirror inside your
   `touch.cpp`. CST9220 needs `setSwapXY(true)` + `setMirrorXY(true,

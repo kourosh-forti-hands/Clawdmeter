@@ -111,6 +111,34 @@ static bool parse_json(const char* json, UsageData* out) {
     out->weekly_pct = doc["w"] | 0.0f;
     out->weekly_reset_mins = doc["wr"] | -1;
     strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
+    // Window lengths come from the daemon, which parses them out of the API's
+    // own header names. 0 means unknown — the UI hides the pace readout rather
+    // than assuming a window length.
+    out->session_window_mins = doc["sw"] | 0;
+    out->weekly_window_mins  = doc["ww"] | 0;
+    strlcpy(out->claim, doc["rc"] | "", sizeof(out->claim));
+    // Everything below is optional: an older daemon simply omits the key and
+    // the UI renders a dash rather than inventing a value.
+    strlcpy(out->weekly_status,  doc["ws"]  | "", sizeof(out->weekly_status));
+    strlcpy(out->overage,        doc["ov"]  | "", sizeof(out->overage));
+    strlcpy(out->overage_reason, doc["ovr"] | "", sizeof(out->overage_reason));
+    out->fallback_pct = doc["fb"] | -1;
+
+    // Activity heatmap: 168 chars of '0'..'9'. Anything shorter or malformed
+    // leaves heat_valid false and the UI shows "no activity data" rather than
+    // rendering a partially-filled grid as though it were real.
+    out->heat_valid = false;
+    const char* hm = doc["hm"] | "";
+    if (hm && strlen(hm) == sizeof(out->heat)) {
+        for (size_t i = 0; i < sizeof(out->heat); ++i) {
+            const char c = hm[i];
+            out->heat[i] = (c >= '0' && c <= '9') ? (uint8_t)(c - '0') : 0;
+        }
+        out->heat_valid = true;
+    }
+    out->heat_first_weekday = doc["hd"]  | 0;
+    out->tokens_today_k     = doc["tt"]  | 0;
+    out->sessions_today     = doc["tsn"] | 0;
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);
@@ -174,6 +202,16 @@ static void check_serial_cmd() {
             cmd_buf[cmd_pos] = '\0';
             if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+            // "screen N" jumps straight to a page so UI work can be captured
+            // without a physical button press. Boards only advance off the
+            // splash on a press, so without this the documented QA route is
+            // to edit the boot screen and reflash for every iteration.
+            // ui_show_screen() already falls back to SCREEN_USAGE for pages
+            // this board never built, so an out-of-range N is harmless.
+            else if (strncmp(cmd_buf, "screen ", 7) == 0) {
+                int n = atoi(cmd_buf + 7);
+                if (n >= 0 && n < SCREEN_COUNT) ui_show_screen((screen_t)n);
+            }
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;

@@ -298,6 +298,21 @@ class ReqCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
+// The HID input report only reaches a host that has SUBSCRIBED to it. notify()
+// on an unsubscribed characteristic is silently discarded while the link still
+// reports itself connected — so a host that never subscribed is
+// indistinguishable from a working one without this log. Both macOS and Windows
+// cache a device's GATT database per bond, so a bond formed against an older
+// firmware build can leave the host permanently unsubscribed; the symptom is
+// "the keyboard does nothing" with every status indicator green. Mirrors the
+// req_char subscribe log below, which exists for the same reason.
+class KbdCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& info, uint16_t subValue) override {
+        Serial.printf("BLE: HID kbd onSubscribe subValue=%u peer=%s\n",
+                      subValue, info.getAddress().toString().c_str());
+    }
+};
+
 void ble_init(void) {
     NimBLEDevice::init(DEVICE_NAME);
     NimBLEDevice::setSecurityAuth(true, false, true);  // bonding, no MITM, SC
@@ -335,6 +350,7 @@ void ble_init(void) {
     hid_dev->setHidInfo(33, 0x02);
     hid_dev->setBatteryLevel(100);
     input_kbd = hid_dev->getInputReport(1);  // report ID 1
+    input_kbd->setCallbacks(new KbdCallbacks());
 
     // --- Custom data service ---
     NimBLEService* svc = server->createService(SERVICE_UUID);

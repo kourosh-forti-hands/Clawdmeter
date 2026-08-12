@@ -499,6 +499,25 @@ static void mas_show_still(void) {
                    mas_cell, mas_x, mas_feet_y);
 }
 
+// Idling/acting happens parked at mas_slot_x — off to one side, clear of the
+// centered page title on every screen (ui.cpp puts the title at
+// LV_ALIGN_TOP_MID; the mascot's corner is always well left of that). The
+// walk-off/walk-back TRIP is the exception: it sweeps mas_x across the FULL
+// screen width, so at the idle slot's height it drags the sprite straight
+// under the centered title on its way across — that's the "walks through the
+// title" bug. ui.cpp derives the idle slot from the same title_y the header
+// text sits on (see compute_layout()'s `logo_y = title_y - 10`), so
+// mas_feet_y — the slot's bottom edge — already approximates "bottom of the
+// header row" on every board. Push the transit sprite down by its own height
+// plus a few grid cells of headroom so its TOP clears that line instead of
+// the slot's bottom, i.e. he steps down off the ledge before walking and
+// hops back up right as he settles back into the slot. Scales with mas_cell
+// so it degrades the same way on small panels as everything else does.
+#define MAS_ROAM_CLEARANCE_CELLS 3
+static int mas_roam_feet_y(const splash_anim_def_t *a) {
+    return mas_feet_y + a->h * mas_cell + MAS_ROAM_CLEARANCE_CELLS * mas_cell;
+}
+
 lv_obj_t* splash_mascot_create(lv_obj_t *parent, int slot_x, int feet_y, int cell) {
     mas_cell = cell;
     mas_slot_x = slot_x;
@@ -642,8 +661,13 @@ void splash_mascot_tick(void) {
                    mas_lurk_cell, mas_screen_w - a->w * mas_lurk_cell,
                    (STAGE_ANCHOR_Y + a->oy + a->h) * mas_lurk_cell);
     } else {
+        // Only drop to the roam band while actually mid-stride (mas_from_loop,
+        // the same window that drives horizontal translation above) — acts
+        // and the walk's stationary wind-up/landing frames stay at mas_feet_y
+        // so there's no vertical pop while he's just standing at the slot.
+        const int feet_y = (walking_mode && mas_from_loop) ? mas_roam_feet_y(a) : mas_feet_y;
         mas_render(a, mas_frame, mas_face < 0, &mas_dsc, mas_buf, mas_img,
-                   mas_cell, mas_x, mas_feet_y);
+                   mas_cell, mas_x, feet_y);
     }
 }
 

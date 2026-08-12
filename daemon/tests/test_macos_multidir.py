@@ -122,7 +122,8 @@ def test_poll_active_payload_picks_active_and_skips_tokenless(monkeypatch):
         return {"s": 25, "ok": True} if token == "tA" else None
 
     sel = PlanSelector()
-    with patch.object(mod, "poll_api", new=AsyncMock(side_effect=fake_poll)):
+    with patch.object(mod, "poll_api", new=AsyncMock(side_effect=fake_poll)), \
+         patch.object(mod.transcript_stats, "activity_fields", return_value={}):
         payload = _run(mod.poll_active_payload(sel))
     assert payload == {"s": 25, "ok": True}  # only A had a token
 
