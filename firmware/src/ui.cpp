@@ -309,6 +309,10 @@ static lv_obj_t* arc_session = nullptr;   // radial gauges, rich_info only
 static lv_obj_t* arc_weekly  = nullptr;
 static lv_obj_t* limits_container = nullptr;
 static lv_obj_t* system_container = nullptr;
+// The soft key deck lives in its own screen-level container rather than inside
+// any one page, so the keys stay reachable on every page instead of only the
+// usage view. See build_key_deck().
+static lv_obj_t* keys_container = nullptr;
 
 // ---- Activity heatmap ----
 // 168 cells rendered into ONE canvas rather than 168 LVGL objects: each object
@@ -925,27 +929,44 @@ static void init_usage_screen(lv_obj_t* scr) {
     // panes reach the button deck. Hidden rather than deleted so every
     // ui_tick_anim call site stays valid and narrow boards keep it.
 
-    // Attached to usage_container rather than usage_group so they stay
-    // visible across the pairing / idle / usage view states — the HID link is
-    // a separate BLE connection from the daemon's, so PTT works even when no
-    // usage data is flowing.
-    //
-    // Centred as a pair rather than pinned to the left and right edges. Edge
-    // pinning is a portrait-screen habit and here it put TALK at x 20..220,
-    // straight through the board's PWR hot corner (x < 72) — and because
-    // touch_hal_read() hides that corner from LVGL, TALK's left third would
-    // have been silently dead, cycling brightness instead of sending Space.
-    // Centred, the pair spans x 188..612 on an 800 px panel, clear of both
-    // corners by a wide margin.
-    if (L.soft_buttons) {
-        // Centred as one deck: key i sits (i - centre) steps either side of
-        // the middle, so the row stays centred whatever SOFT_KEY_COUNT is.
-        const int16_t step = (int16_t)(L.softbtn_w + L.softbtn_gap);
-        for (int i = 0; i < SOFT_KEY_COUNT; ++i) {
-            const int16_t dx = (int16_t)((i - (SOFT_KEY_COUNT - 1) / 2.0f) * step);
-            make_soft_button(usage_container, SOFT_KEYS[i].label,
-                             LV_ALIGN_BOTTOM_MID, dx, soft_key_cb, &SOFT_KEYS[i]);
-        }
+}
+
+// The key deck is the board's only keyboard, so it belongs to the device
+// rather than to one page. Parented to the screen — not to usage_container —
+// so it survives page changes: on a board with no physical buttons, paging to
+// Detail or Activity used to take TALK and MODE away with it, and left a bare
+// strip of background where the deck had been.
+//
+// Built last so it sits above every page container, and left non-clickable so
+// a tap in the gaps between keys still falls through to the page beneath and
+// cycles as before.
+//
+// Centred as one deck rather than pinned to the left and right edges. Edge
+// pinning is a portrait-screen habit and here it put TALK at x 20..220,
+// straight through the board's PWR hot corner (x < 72) — and because
+// touch_hal_read() hides that corner from LVGL, TALK's left third would have
+// been silently dead, cycling brightness instead of sending Space. Centred,
+// the deck spans x 188..612 on an 800 px panel, clear of both corners.
+static void build_key_deck(lv_obj_t* scr) {
+    if (!L.soft_buttons) return;
+
+    keys_container = lv_obj_create(scr);
+    lv_obj_set_size(keys_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(keys_container, 0, 0);
+    lv_obj_set_style_bg_opa(keys_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(keys_container, 0, 0);
+    lv_obj_set_style_pad_all(keys_container, 0, 0);
+    lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(keys_container, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_CLICKABLE);
+
+    // Key i sits (i - centre) steps either side of the middle, so the row
+    // stays centred whatever SOFT_KEY_COUNT is.
+    const int16_t step = (int16_t)(L.softbtn_w + L.softbtn_gap);
+    for (int i = 0; i < SOFT_KEY_COUNT; ++i) {
+        const int16_t dx = (int16_t)((i - (SOFT_KEY_COUNT - 1) / 2.0f) * step);
+        make_soft_button(keys_container, SOFT_KEYS[i].label,
+                         LV_ALIGN_BOTTOM_MID, dx, soft_key_cb, &SOFT_KEYS[i]);
     }
 }
 
@@ -1116,6 +1137,9 @@ void ui_init(void) {
         lv_obj_del(battery_img);
         battery_img = nullptr;
     }
+
+    // Last, so the deck layers above every page container built above.
+    build_key_deck(scr);
 }
 
 void ui_update(const UsageData* data) {
@@ -1565,6 +1589,15 @@ void ui_show_screen(screen_t screen) {
     case SCREEN_LIMITS:  lv_obj_clear_flag(limits_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_ACTIVITY: lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
+    }
+
+    // The deck follows the same rule as the mascot and logo: present on every
+    // page, hidden on the splash. splash.cpp pushes its frames straight to the
+    // panel and bypasses LVGL entirely, so anything left visible here would be
+    // painted over anyway — and would flicker back on the first LVGL redraw.
+    if (keys_container) {
+        if (screen == SCREEN_SPLASH) lv_obj_add_flag(keys_container, LV_OBJ_FLAG_HIDDEN);
+        else                         lv_obj_clear_flag(keys_container, LV_OBJ_FLAG_HIDDEN);
     }
 
     splash_mascot_set_visible(screen != SCREEN_SPLASH);
