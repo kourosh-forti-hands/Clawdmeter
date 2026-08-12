@@ -10,7 +10,14 @@
 //
 // Pure and header-only so the geometry is unit-tested on the host.
 
-static inline bool pwr_corner_contains(int16_t x, int16_t y, int16_t screen_h) {
-    return x < (int16_t)PWR_CORNER_PX &&
-           y >= (int16_t)(screen_h - (int16_t)PWR_CORNER_PX);
+// TOP-RIGHT, not bottom-left. The five-key HID deck spans the full width at
+// the bottom of the screen, so a bottom-left corner sits directly on top of
+// TALK — and because touch_hal_read() hides this region from LVGL, that made
+// TALK's left third silently dead. The top-right corner is free: the panels
+// start below it and the clock is centred.
+static inline bool pwr_corner_contains(int16_t x, int16_t y, int16_t screen_w,
+                                       int16_t screen_h) {
+    (void)screen_h;
+    return x >= (int16_t)(screen_w - (int16_t)PWR_CORNER_PX) &&
+           y < (int16_t)PWR_CORNER_PX;
 }

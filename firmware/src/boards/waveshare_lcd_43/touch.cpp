@@ -118,7 +118,7 @@ void touch_hal_read(uint16_t* x, uint16_t* y, bool* pressed) {
 
     // Hide the virtual PWR button's corner from LVGL. Without this a PWR tap
     // would also reach ui.cpp's global_click_cb and toggle the splash screen.
-    if (*pressed && pwr_corner_contains((int16_t)*x, (int16_t)*y, LCD_HEIGHT)) {
+    if (*pressed && pwr_corner_contains((int16_t)*x, (int16_t)*y, LCD_WIDTH, LCD_HEIGHT)) {
         *pressed = false;
     }
 }

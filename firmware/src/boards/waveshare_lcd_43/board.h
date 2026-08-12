@@ -65,7 +65,12 @@
 // verified by A/B on real hardware, 0 vs the value below.
 //
 // 10 lines * 800 px = 16 KB per buffer, 32 KB of internal SRAM total.
-#define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 10)
+// 20 lines, not 10: artifacts appeared along the LEFT edge, which is the
+// signature of the bounce buffer being refilled too late — the peripheral
+// reads the start of each scanline before the DMA has delivered it. More
+// headroom per refill is the first remedy; lowering LCD_PREFER_SPEED is
+// the second.
+#define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 20)
 
 // ---- I2C bus (CH422G expander + GT911 touch) ----
 #define IIC_SDA              8

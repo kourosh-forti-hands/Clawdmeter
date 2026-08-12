@@ -41,6 +41,7 @@ struct Layout {
     // inside each panel plus a footer status strip. Off everywhere else, where
     // the extra text would crowd the layout.
     bool    rich_info;
+    bool    use_arcs;                // radial gauges instead of bars
     int16_t detail_y;                // y offset INSIDE each usage panel
     int16_t footer_y;                // absolute y of the footer status strip
     int16_t arc_size;                // radial gauge diameter (rich_info only)
@@ -215,30 +216,28 @@ static void compute_layout(const BoardCaps& c) {
         // Gauge centred in the panel with its text stacked underneath. Beside
         // the dial does not work at this panel width — "Under pace - 63% of 7d
         // gone" is wider than the 200 px that would be left over.
-        // Split dashboard: the two gauges stack in the left half and stay put,
-        // while the right half cycles History/System. Usage is therefore never
-        // off-screen and detail is one tap away instead of three.
+        // Canonical Clawdmeter layout (screenshots/usage.png), scaled to
+        // 800x480: mascot top-left, clock centred, two stacked full-width
+        // panels each with a big percentage, pill, bar and reset line, status
+        // line beneath. The extra analysis lives one tap away rather than
+        // crowding the screen you actually glance at.
         //
-        // Vertical budget: title 18..50, panes 60..390, buttons 400..456.
-        // 330 px of pane height holds two panels plus a gap: (330-16)/2 = 157.
-        L.title_font    = &font_tiempos_34;
-        L.title_y       = 18;
-        L.content_y     = 60;
-        L.usage_panel_h = 157;
+        // Vertical budget: clock 18..74, panels 84..214 and 230..360,
+        // status ~370..388, keys 404..456.
+        L.content_y       = 84;
+        L.usage_panel_h   = 130;
         L.usage_panel_gap = 16;
-        // Panels are now wide and short (372x157), so the dial sits on the
-        // LEFT of each with its text beside it — the opposite arrangement from
-        // the tall full-width panels, and the reason 246 px of text column now
-        // fits where it didn't before.
-        L.arc_size      = 108;
-        L.pct_font      = &font_styrene_28;
-        L.text_x        = 124;       // right of the dial, inside the panel
-        L.usage_reset_y = 58;
-        L.detail_y      = 92;
-        L.anim_y        = 0;         // no status line: the panes own the space
-        L.detail_font   = &font_styrene_20;
-        L.footer_font   = &font_styrene_16;
-        L.footer_y      = 0;         // footer suppressed; System pane carries it
+        L.use_arcs        = false;     // official design uses bars
+        // Panel internals compressed to fit 130 px (106 px of content):
+        // pct 0..48, bar 52..72, reset 78..106.
+        L.usage_bar_y     = 52;
+        L.bar_h           = 20;
+        L.usage_reset_y   = 78;
+        L.anim_font       = &font_mono_18;
+        L.anim_y          = -92;
+        L.detail_font     = &font_styrene_20;
+        L.footer_font     = &font_styrene_16;
+        L.footer_y        = 0;
     }
 
     // Panel placement is derived, not per-breakpoint: every existing board
@@ -567,10 +566,9 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
 
     *out_pill = make_pill(panel, pill_text);
     // Caption heads the text column beside the dial on rich boards.
-    if (L.rich_info) lv_obj_set_pos(*out_pill, L.text_x, 4);
-    else             lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
+    lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
-    if (L.rich_info) {
+    if (L.use_arcs) {
         // Radial gauge instead of a bar. On a wide panel a 340 px track showing
         // 5% is mostly empty pixels; a dial reads as a filled proportion at a
         // glance and puts the number where the eye already is — in the middle.
@@ -615,8 +613,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
     lv_label_set_text(*out_reset, "---");
     lv_obj_set_style_text_font(*out_reset, L.rich_info ? L.detail_font : L.reset_font, 0);
     lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
-    if (L.rich_info) lv_obj_set_pos(*out_reset, L.text_x, L.usage_reset_y);
-    else             lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
+    lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
 
     return panel;
 }
@@ -749,13 +746,13 @@ static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
 // their navigation stays splash<->usage.
 
 static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
-    // A "page" is really the right-hand pane of the split dashboard: it
-    // occupies the free half beside the gauges, which stay visible underneath
-    // it on the left. Geometry comes from usage_compute_slots() so the pane can
-    // never overlap the panels.
+    // A full-screen detail page, reached by tapping past the usage view. It
+    // is deliberately NOT on the default screen: the main view stays the
+    // canonical Clawdmeter layout and this carries everything that would
+    // otherwise clutter it.
     lv_obj_t* page = lv_obj_create(scr);
-    lv_obj_set_size(page, L.slots.pane_w, L.scr_h - L.content_y - 90);
-    lv_obj_set_pos(page, L.slots.pane_x, L.content_y);
+    lv_obj_set_size(page, L.scr_w, L.scr_h);
+    lv_obj_set_pos(page, 0, 0);
     lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
@@ -770,16 +767,16 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
 
     lv_obj_t* t = lv_label_create(page);
     lv_label_set_text(t, title);
-    lv_obj_set_style_text_font(t, &font_styrene_24, 0);
+    lv_obj_set_style_text_font(t, &font_tiempos_34, 0);
     lv_obj_set_style_text_color(t, COL_TEXT, 0);
-    lv_obj_set_pos(t, 0, 0);
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 16);
 
-    // Single column: the pane is only ~372 px wide, so two columns of
-    // "label value" would truncate the values that made the pane worth having.
-    const int16_t col_w   = L.slots.pane_w;
-    const int16_t row_h   = 25;
-    const int16_t rows_y  = 36;
-    const int16_t per_col = PAGE_ROWS;
+    // Two columns across the full width: usage analysis on the left, device
+    // diagnostics on the right.
+    const int16_t col_w   = (L.scr_w - 2 * L.margin - L.usage_panel_gap) / 2;
+    const int16_t row_h   = 27;
+    const int16_t rows_y  = PAGE_TOP + 150;   // below the chart
+    const int16_t per_col = PAGE_ROWS / 2;
     for (int i = 0; i < PAGE_ROWS; ++i) {
         lv_obj_t* r = lv_label_create(page);
         lv_label_set_recolor(r, true);
@@ -789,7 +786,9 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
         // the panel edge at 20 px.
         lv_obj_set_style_text_font(r, &font_styrene_16, 0);
         lv_obj_set_style_text_color(r, COL_DIM, 0);
-        lv_obj_set_pos(r, 0, (int16_t)(rows_y + i * row_h));
+        const bool right = (i >= per_col);
+        lv_obj_set_pos(r, (int16_t)(L.margin + (right ? col_w + L.usage_panel_gap : 0)),
+                          (int16_t)(rows_y + (right ? i - per_col : i) * row_h));
         rows[i] = r;
     }
     return page;
@@ -868,26 +867,13 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Rich-info extras: a pace/detail line inside each panel and a footer strip.
     // Recolor is on so the pace verdict can be tinted without extra widgets.
     if (L.rich_info) {
-        // The pace verdict lives INSIDE the dial, under the percentage. The
-        // gauge then labels itself — number, verdict and colour in one glance —
-        // instead of competing with a caption line underneath it.
-        lbl_session_detail = lv_label_create(panel_session);
-        lv_label_set_recolor(lbl_session_detail, true);
-        lv_label_set_text(lbl_session_detail, "");
-        lv_obj_set_style_text_font(lbl_session_detail, &font_styrene_16, 0);
-        lv_obj_set_style_text_color(lbl_session_detail, COL_DIM, 0);
-        lv_obj_set_pos(lbl_session_detail, L.text_x, L.detail_y);
+        // No pace line and no footer on the main view. The official layout is
+        // percentage, pill, bar and reset — nothing else. The pace verdict,
+        // burn rate and diagnostics all live on the detail page, one tap away,
+        // so the screen you actually glance at stays uncluttered.
+        lbl_session_detail = nullptr;
+        lbl_weekly_detail  = nullptr;
 
-        lbl_weekly_detail = lv_label_create(panel_weekly);
-        lv_label_set_recolor(lbl_weekly_detail, true);
-        lv_label_set_text(lbl_weekly_detail, "");
-        lv_obj_set_style_text_font(lbl_weekly_detail, &font_styrene_16, 0);
-        lv_obj_set_style_text_color(lbl_weekly_detail, COL_DIM, 0);
-        lv_obj_set_pos(lbl_weekly_detail, L.text_x, L.detail_y);
-
-        // Footer strip: account tier, API status, and data freshness. Lives on
-        // usage_group so it hides with the panels when the link drops — stale
-        // metadata next to a pairing hint would be misleading.
         // No footer strip on the usage page: the gauge layout needs the height,
         // and the System page already reports status and data freshness. All
         // footer call sites are NULL-guarded, so leaving it unbuilt is enough.
@@ -898,11 +884,10 @@ static void init_usage_screen(lv_obj_t* scr) {
         // is free (this board has no battery telemetry) so we can show both
         // the title and the time. Stays empty until the daemon opts in by
         // sending wall-clock fields — see read_clock_setting() daemon-side.
-        lbl_corner_clock = lv_label_create(usage_container);
-        lv_label_set_text(lbl_corner_clock, "");
-        lv_obj_set_style_text_font(lbl_corner_clock, L.title_font, 0);
-        lv_obj_set_style_text_color(lbl_corner_clock, COL_DIM, 0);
-        lv_obj_align(lbl_corner_clock, LV_ALIGN_TOP_RIGHT, -L.margin, L.title_y);
+        // No corner clock: in the official design the clock REPLACES the
+        // title, centred, and that is what every other board does. All clock
+        // call sites fall back to lbl_title when this is NULL.
+        lbl_corner_clock = nullptr;
     }
 
     build_pair_group(usage_container);
@@ -917,7 +902,6 @@ static void init_usage_screen(lv_obj_t* scr) {
     // The split dashboard has no spare row for the animated status line: the
     // panes reach the button deck. Hidden rather than deleted so every
     // ui_tick_anim call site stays valid and narrow boards keep it.
-    if (L.rich_info) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
 
     // Attached to usage_container rather than usage_group so they stay
     // visible across the pairing / idle / usage view states — the HID link is
@@ -972,15 +956,15 @@ void ui_init(void) {
 
     init_usage_screen(scr);
     if (L.rich_info) {
-        limits_container = make_page(scr, "History", limits_rows);
-        system_container = make_page(scr, "System", system_rows);
+        limits_container = make_page(scr, "Detail", limits_rows);
+        system_container = nullptr;   // merged into the one detail page
 
         // Trend chart above the stat rows. A percentage tells you where you
         // are; the shape tells you how you got there and where it's going,
         // which is the thing a single number genuinely cannot show.
         hist_chart = lv_chart_create(limits_container);
-        lv_obj_set_size(hist_chart, L.slots.pane_w - 8, 150);
-        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, 36);
+        lv_obj_set_size(hist_chart, L.scr_w - 2 * L.margin, 132);
+        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, PAGE_TOP);
         lv_chart_set_type(hist_chart, LV_CHART_TYPE_LINE);
         lv_chart_set_point_count(hist_chart, HIST_POINTS);
         lv_chart_set_range(hist_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
@@ -1021,8 +1005,7 @@ void ui_init(void) {
         // first four beneath it (2x2) and hide the rest. Four is deliberate:
         // these are the figures that say something the chart doesn't.
         for (int i = 0; i < PAGE_ROWS; ++i) {
-            if (i < 4) {
-                lv_obj_set_pos(limits_rows[i], 0, (int16_t)(196 + i * 25));
+            if (i < PAGE_ROWS) {
             } else {
                 lv_obj_add_flag(limits_rows[i], LV_OBJ_FLAG_HIDDEN);
             }
@@ -1247,29 +1230,31 @@ static void refresh_pages(void) {
             }
         } else snprintf(v, sizeof(v), "not reported");
         set_row(limits_rows[3], "Overage", v);
+
+        set_row(limits_rows[4], "Status", d->status);
+        set_row(limits_rows[5], "Weekly", d->weekly_status[0] ? d->weekly_status : "-");
     }
 
-    // ---- System ----
+    // ---- Right column: device + link diagnostics ----
     const BoardCaps& c = board_caps();
-    set_row(system_rows[0], "Board", c.name);
-    snprintf(v, sizeof(v), "%dx%d", c.width, c.height);
-    set_row(system_rows[1], "Display", v);
+    set_row(limits_rows[6], "Board", c.name);
 
     const uint32_t up_s = millis() / 1000;
     if (up_s < 3600) snprintf(v, sizeof(v), "%lum %lus", (unsigned long)(up_s / 60), (unsigned long)(up_s % 60));
     else             snprintf(v, sizeof(v), "%luh %lum", (unsigned long)(up_s / 3600), (unsigned long)((up_s % 3600) / 60));
-    set_row(system_rows[2], "Uptime", v);
+    set_row(limits_rows[7], "Uptime", v);
 
     snprintf(v, sizeof(v), "%lu KB", (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
-    set_row(system_rows[3], "Free RAM", v);
+    set_row(limits_rows[8], "Free RAM", v);
 #ifdef BOARD_HAS_PSRAM
     snprintf(v, sizeof(v), "%lu KB", (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-    set_row(system_rows[4], "Free PSRAM", v);
+    set_row(limits_rows[9], "Free PSRAM", v);
 #else
-    set_row(system_rows[4], "Free PSRAM", "none");
+    set_row(limits_rows[9], "Free PSRAM", "none");
 #endif
 
-    set_row(system_rows[5], "Link", s_ble_connected ? ble_get_mac_address() : "disconnected");
+    set_row(limits_rows[10], "Link",
+            s_ble_connected ? ble_get_mac_address() : "disconnected");
 
     if (last_data_ms == 0) snprintf(v, sizeof(v), "no data yet");
     else {
@@ -1277,24 +1262,7 @@ static void refresh_pages(void) {
         if (age < 90) snprintf(v, sizeof(v), "%lus ago", (unsigned long)age);
         else          snprintf(v, sizeof(v), "%lum ago", (unsigned long)(age / 60));
     }
-    set_row(system_rows[6], "Updated", v);
-
-    set_row(system_rows[7], "Bonded", ble_has_bonds() ? "yes" : "no");
-    set_row(system_rows[8], "Name", ble_get_device_name());
-
-    // Reachable states, not the enum size: the split dashboard cycles
-    // splash -> History -> System, so SCREEN_USAGE is never a stop here.
-    set_row(system_rows[9], "Pane",
-            current_screen == SCREEN_SYSTEM ? "System (tap to cycle)"
-                                            : "History (tap to cycle)");
-
-    snprintf(v, sizeof(v), "%d buttons", (int)c.button_count);
-    set_row(system_rows[10], "Input", v);
-
-    // Build stamp — tells you at a glance whether the device is running the
-    // firmware you just flashed, which matters when reflashing repeatedly.
-    snprintf(v, sizeof(v), "%s", __DATE__);
-    set_row(system_rows[11], "Built", v);
+    set_row(limits_rows[11], "Updated", v);
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -1432,8 +1400,8 @@ static void global_click_cb(lv_event_t* e) {
     // separate "usage only" stop in the cycle — tapping just swaps the pane
     // beside them, then returns to the splash.
     switch (current_screen) {
-    case SCREEN_SPLASH: ui_show_screen(SCREEN_LIMITS); break;
-    case SCREEN_LIMITS: ui_show_screen(SCREEN_SYSTEM); break;
+    case SCREEN_SPLASH: ui_show_screen(SCREEN_USAGE);  break;
+    case SCREEN_USAGE:  ui_show_screen(SCREEN_LIMITS); break;
     default:            ui_show_screen(SCREEN_SPLASH); break;
     }
 }
@@ -1445,21 +1413,14 @@ void ui_show_screen(screen_t screen) {
         screen = SCREEN_USAGE;
     }
 
-    // On split boards the gauges stay on screen for every dashboard state;
-    // only the right-hand pane changes.
-    const bool dashboard = (screen == SCREEN_USAGE || screen == SCREEN_LIMITS ||
-                            screen == SCREEN_SYSTEM);
-    if (dashboard && L.rich_info) lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
-    else                          lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (limits_container) lv_obj_add_flag(limits_container, LV_OBJ_FLAG_HIDDEN);
-    if (system_container) lv_obj_add_flag(system_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_LIMITS:  lv_obj_clear_flag(limits_container, LV_OBJ_FLAG_HIDDEN); break;
-    case SCREEN_SYSTEM:  lv_obj_clear_flag(system_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
     }
 

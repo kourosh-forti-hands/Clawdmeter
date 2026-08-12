@@ -195,25 +195,18 @@ hardware boards, not shared code).
 The LCD-4.3 is the first landscape board and unlocks a richer UI, all gated on
 that runtime predicate (`L.rich_info` in `ui.cpp`) so no other port changes:
 
-- **Split dashboard.** The two gauges stack in the LEFT half and stay on screen
-  permanently; the RIGHT half is a pane that cycles History → System as you
-  tap, so usage is never hidden and detail is one tap away rather than three.
-  The cycle is splash → History → System → splash; `SCREEN_USAGE` is never a
-  stop on these boards (the gauges are always up), though it remains the normal
-  screen everywhere else. `usage_compute_slots()` returns `pane_x`/`pane_w` for
-  that right half and guarantees it cannot overlap the panels.
-- Panels are wide and short here (372x157), so each dial sits on the LEFT of its
-  panel with the caption, reset and pace text beside it — the opposite of the
-  tall full-width panels on other boards, and the reason the text column fits.
-- **Gauges**: radial `lv_arc` instead of bars, **tinted by pace**
-  (`pace_color_for()`) rather than absolute level — 40% used is fine 90% into a
-  window and alarming 10% in. The percentage and the pace verdict live *inside*
-  the ring; the percentage must be a CHILD of the arc, since aligning a sibling
-  computes coordinates before LVGL lays the arc out and clips the digits.
-- **History pane**: an `lv_chart` in shift mode owns the ring buffer, one point
-  per payload, backed by `history_store` so it survives reboots.
-- **System pane**: board, resolution, uptime, free heap/PSRAM, link MAC, bond
-  state, data age, build stamp.
+- **The main view is the canonical Clawdmeter layout** (`screenshots/usage.png`)
+  at 800x480: clock centred, two stacked full-width panels each with a large
+  percentage, pill, horizontal bar and "Resets in ...", status line beneath.
+  Earlier revisions tried a two-column split and then a fixed-left/cycling-right
+  dashboard; both traded the design's clarity for density. Density now lives on
+  a **Detail page one tap away** (cycle: splash -> usage -> Detail -> splash),
+  which carries the trend chart, burn rate, projection, binding window, overage
+  state and device diagnostics.
+- Panel internals are compressed on this board to fit 130 px panels: `pct` at
+  0, bar at `usage_bar_y` 52 (20 px tall), reset at 78. The stock large-layout
+  values (bar 56, reset 94, panel 150) do not fit two panels plus a key deck in
+  480 px.
 - **Five-key HID deck** (`SOFT_KEYS` in `ui.cpp`), built when
   `board_caps().button_count == 0`: TALK (Space, held for PTT), ESC, ENTER, UP,
   MODE (Shift+Tab). Adding a key is a table row; deck geometry derives from
@@ -222,6 +215,10 @@ that runtime predicate (`L.rich_info` in `ui.cpp`) so no other port changes:
   boards without battery telemetry) instead of replacing the title as it does
   on narrow boards. It stays blank until the daemon opts in — set `clock = 24`
   (or `auto`/`12`) in `~/.config/claude-usage-monitor/config`.
+
+The PWR hot corner is **top-right**, not bottom-left: the five-key deck spans
+the full width at the bottom, and because `touch_hal_read()` hides the corner
+from LVGL a bottom-left corner silently killed TALK's left third.
 
 **Never reuse the usage page's `content_y` for the extra pages** — it is tuned
 around the gauges and sits high enough to clip a page title's descenders. Pages

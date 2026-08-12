@@ -16,25 +16,34 @@ static int failures = 0;
         }                                                                      \
     } while (0)
 
-static void should_accept_the_bottom_left_corner() {
-    CHECK(pwr_corner_contains(0, 479, 480));
-    CHECK(pwr_corner_contains(71, 408, 480));
-    CHECK(pwr_corner_contains(0, 408, 480));
+static void should_accept_the_top_right_corner() {
+    CHECK(pwr_corner_contains(799, 0, 800, 480));
+    CHECK(pwr_corner_contains(728, 71, 800, 480));
+    CHECK(pwr_corner_contains(799, 71, 800, 480));
 }
 
 static void should_reject_just_outside_the_corner() {
-    CHECK(!pwr_corner_contains(72, 479, 480));   // one px right of the edge
-    CHECK(!pwr_corner_contains(71, 407, 480));   // one px above the edge
+    CHECK(!pwr_corner_contains(727, 0, 800, 480));    // one px left of the edge
+    CHECK(!pwr_corner_contains(728, 72, 800, 480));   // one px below the edge
 }
 
 static void should_reject_the_rest_of_the_screen() {
-    CHECK(!pwr_corner_contains(400, 240, 480));  // centre
-    CHECK(!pwr_corner_contains(0, 0, 480));      // top-left
-    CHECK(!pwr_corner_contains(799, 479, 480));  // bottom-right
+    CHECK(!pwr_corner_contains(400, 240, 800, 480));  // centre
+    CHECK(!pwr_corner_contains(0, 0, 800, 480));      // top-left
+    CHECK(!pwr_corner_contains(799, 479, 800, 480));  // bottom-right
+}
+
+// The five-key deck spans the full width at the bottom; the corner must not
+// steal any of it. TALK is the leftmost key, roughly x 21..163, y 398..458.
+static void should_not_overlap_the_bottom_key_deck() {
+    for (int16_t x = 0; x < 800; x += 7)
+        for (int16_t y = 390; y < 480; y += 5)
+            CHECK(!pwr_corner_contains(x, y, 800, 480));
 }
 
 int main() {
-    should_accept_the_bottom_left_corner();
+    should_accept_the_top_right_corner();
+    should_not_overlap_the_bottom_key_deck();
     should_reject_just_outside_the_corner();
     should_reject_the_rest_of_the_screen();
     if (failures == 0) printf("all pwr_corner tests passed\n");

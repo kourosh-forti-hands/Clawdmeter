@@ -34,7 +34,7 @@ void power_hal_tick(void) {
     touch_raw_read(&x, &y, &pressed);
 
     bool in_corner = pressed &&
-                     pwr_corner_contains((int16_t)x, (int16_t)y, LCD_HEIGHT);
+                     pwr_corner_contains((int16_t)x, (int16_t)y, LCD_WIDTH, LCD_HEIGHT);
 
     if (in_corner && !corner_held) {
         corner_held = true;
