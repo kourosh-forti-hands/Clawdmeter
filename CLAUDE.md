@@ -14,7 +14,7 @@ Seven ports today (two SoC families, five panel sizes, three display bus types):
 - `boards/waveshare_amoled_18_c6/` — Waveshare ESP32-C6-Touch-AMOLED-1.8 (368×448 portrait, SH8601, FT3168 touch, TCA9554 expander). Build env: `waveshare_amoled_18_c6`. Same panel as the S3 1.8 but on the C6 SoC. All subsystems (display, touch, BOOT + PWR buttons, battery, BLE) verified on hardware.
 - `boards/waveshare_amoled_206/` — Waveshare ESP32-S3-Touch-AMOLED-2.06 (CO5300, 410×502 watch form factor, FT3168 touch, no IO expander, 32 MB flash, PCF85063 RTC, ES8311 codec). Build env: `waveshare_amoled_206`. Display, touch, battery, IMU init, and BLE verified on hardware; the ES8311 chime path is not wired up (`sound.cpp` no-ops).
 - `boards/waveshare_lcd_154/` — Waveshare ESP32-S3-Touch-LCD-1.54 (ST7789, 240×240 square, CST816T touch @ 0x15). Build env: `waveshare_lcd_154`. **The first non-AMOLED port**: a plain 4-wire SPI TFT, not QSPI, and the panel has no brightness command — backlight is LEDC PWM on `LCD_BL`. **No PMU**: battery is an ADC divider on GPIO1 and `BAT_EN` (GPIO2) is a power-hold line that must be driven HIGH early in `board_init()` or the board browns out on battery. Three buttons (BOOT + GPIO5 + a PWR-role GPIO4); ES8311 chime wired up; QMI8658 populated but unused (fixed orientation, no rotation).
-- `boards/waveshare_lcd_43/` — Waveshare ESP32-S3-Touch-LCD-4.3 (ST7262-class 800×480 RGB **parallel** IPS, GT911 touch @ 0x5D, CH422G IO expander). Build env: `waveshare_lcd_43`. **The first parallel-bus panel**: 16 data lines + DE/VSYNC/HSYNC/PCLK driven by the ESP32-S3 LCD peripheral out of a 768 KB PSRAM framebuffer — there is no panel-side GRAM, so `display_hal_draw_bitmap` is a copy into RAM, not a bus transaction. **No readable physical button**: GPIO 0 carries the green data line G3, and on an ESP32-S3 GPIO 0 *is* the BOOT strap pin, so it is an LCD output at runtime. HID Space/Shift+Tab come from on-screen buttons (`button_count == 0` in `BoardCaps`), and the PWR role is a 72×72 touch hot corner in the bottom-left that `touch.cpp` hides from LVGL. Backlight is a single on/off line (CH422G EXIO2), so brightness levels are synthesised by scaling pixels through a LUT inside `display_hal_draw_bitmap`. No PMU, no battery ADC, no IMU, no codec. **Bounce buffers are required** (`LCD_BOUNCE_BUF_PX`) — at 0 the RGB scan-out DMA and the CPU contend for PSRAM bandwidth and the splash animation flickers heavily. Touch is **polled, not interrupt-driven**: `attachInterrupt()` runs `esp_intr_alloc` → `malloc` on the ~1 KB `ipc1` task stack, and this board's continuous LCD refill interrupts land mid-allocation and trip the stack canary. Display, touch, virtual PWR corner, soft HID buttons, two-column layout, BLE bonding and daemon connectivity all verified on hardware.
+- `boards/waveshare_lcd_43/` — Waveshare ESP32-S3-Touch-LCD-4.3 (ST7262-class 800×480 RGB **parallel** IPS, GT911 touch @ 0x5D, CH422G IO expander). Build env: `waveshare_lcd_43`. **The first parallel-bus panel**: 16 data lines + DE/VSYNC/HSYNC/PCLK driven by the ESP32-S3 LCD peripheral out of a 768 KB PSRAM framebuffer — there is no panel-side GRAM, so `display_hal_draw_bitmap` is a copy into RAM, not a bus transaction. **No readable physical button**: GPIO 0 carries the green data line G3, and on an ESP32-S3 GPIO 0 *is* the BOOT strap pin, so it is an LCD output at runtime. HID Space/Shift+Tab come from on-screen buttons (`button_count == 0` in `BoardCaps`), and the PWR role is a 72×72 touch hot corner in the **top-right** that `touch.cpp` hides from LVGL (it was bottom-left until the full-width key deck arrived — see the wide-landscape section). Backlight is a single on/off line (CH422G EXIO2), so brightness levels are synthesised by scaling pixels through a LUT inside `display_hal_draw_bitmap`. No PMU, no battery ADC, no IMU, no codec. **Bounce buffers are required** (`LCD_BOUNCE_BUF_PX`) — at 0 the RGB scan-out DMA and the CPU contend for PSRAM bandwidth and the splash animation flickers heavily. Now **30 lines**, reached by A/B on hardware: 10 left heavy left-edge artifacting, 20 left a minor residue, 30 is clean. The residue's cause is worth knowing before tuning further — Arduino ships its IDF libraries with `CONFIG_LCD_RGB_ISR_IRAM_SAFE` and `CONFIG_GDMA_ISR_IRAM_SAFE` **unset**, so the bounce-refill ISR runs from flash and a cache miss stalls it mid-scanline, and on the ESP32-S3 flash and PSRAM share the SPI0 controller, so reading the ~400 KB of splash rodata contends directly with scan-out. Enabling those flags is the real fix and needs a custom framework build. Note also that buffer size only buys tolerance for *jitter*: with two buffers the refill budget equals the other's drain time, a ratio independent of size, so a *sustained* shortfall needs a lower `LCD_PREFER_SPEED` instead (the frame is 976×528 pixel clocks: 16 MHz = 31 Hz, 14 = 27, 12 = 23). Touch is **polled, not interrupt-driven**: `attachInterrupt()` runs `esp_intr_alloc` → `malloc` on the ~1 KB `ipc1` task stack, and this board's continuous LCD refill interrupts land mid-allocation and trip the stack canary. Display, touch, virtual PWR corner, soft HID buttons, the canonical stacked usage layout, the Activity heatmap page, BLE bonding and daemon connectivity all verified on hardware. (An earlier two-column split and a fixed-left/cycling-right dashboard were both tried and reverted — see the wide-landscape section.)
 
 Plus one non-hardware target: `boards/sim/` — **native desktop simulator** (SDL2 window, 480×480, `platform = native`). Build env: `sim`. See "Desktop simulator" below.
 
@@ -210,7 +210,15 @@ that runtime predicate (`L.rich_info` in `ui.cpp`) so no other port changes:
 - **Five-key HID deck** (`SOFT_KEYS` in `ui.cpp`), built when
   `board_caps().button_count == 0`: TALK (Space, held for PTT), ESC, ENTER, UP,
   MODE (Shift+Tab). Adding a key is a table row; deck geometry derives from
-  `SOFT_KEY_COUNT` and stays centred at any count.
+  `SOFT_KEY_COUNT` and stays centred at any count. The deck belongs to the
+  **screen**, not to any page (`build_key_deck()`, built last so it layers
+  above every page container, hidden only on the splash) — it is the board's
+  only keyboard, so parenting it to the usage page took TALK and MODE away
+  whenever you paged to Detail or Activity. It is deliberately
+  **non-clickable**: LVGL's hit test recurses into children before considering
+  the object itself, so the keys still get their taps while a tap in the gaps
+  falls through to the page beneath and cycles pages as before. Make that
+  container clickable and you silently kill page cycling everywhere.
 - **Clock** renders top-right beside the title (the battery slot is free on
   boards without battery telemetry) instead of replacing the title as it does
   on narrow boards. It stays blank until the daemon opts in — set `clock = 24`
@@ -249,6 +257,18 @@ hides the pace readout rather than assuming a length.
 `usage_rate_mins_to_full()` for the History page's burn-rate and projection,
 derived purely from observed samples with no quota constants.
 
+The usage bars are coloured by **pace, not absolute level** (`pace_color_for()`
+in `ui.cpp`, fed by `sw`/`ww`): 60% used is alarming 7% into a window and fine
+93% in, and the raw percentage is already printed beside the bar, so colouring
+it on the same number says nothing new. When the daemon reports a zero-length
+window the helper returns a neutral accent rather than inventing a verdict —
+the same discipline as not rendering `acct` as a plan tier. (A trap to know
+about: this logic existed for a long time wired only to `lv_arc` gauges, while
+`L.use_arcs` is assigned `false` at one site and nowhere else, so no board ever
+built an arc and every port silently used absolute thresholds instead. When a
+feature looks implemented but never fires, grep for who *assigns* its flag, not
+just who reads it.)
+
 ## Host unit tests
 
 ```bash
@@ -272,7 +292,34 @@ test rather than a missing flag.
 
 The firmware ships a `screenshot` serial command that dumps the LVGL framebuffer. `./screenshot.sh out.png [port]` captures a PNG sized to the active display (480×480 or 368×448). **Use this on every UI iteration** — Read the PNG with the Read tool, verify the change visually, iterate. Script auto-picks the macOS/Linux default port and falls back to pio's bundled Python if pyserial isn't on the system Python.
 
-The boot screen is `SCREEN_SPLASH` and only advances on a physical button press, so a fresh flash will sit on the splash. To screenshot the screen you're actually editing without asking the user to press a button, **temporarily change the default boot screen** in `main.cpp` (search for `ui_show_screen(SCREEN_SPLASH);`) to `SCREEN_USAGE` / `SCREEN_CONTROLLER` / `SCREEN_BLUETOOTH`, do your iteration, then revert before committing.
+The boot screen is `SCREEN_SPLASH` and only advances on a physical button
+press, so a fresh flash sits on the splash. **Pass the page you want as the
+third argument** — `./screenshot.sh out.png <port> 4` selects it first via the
+firmware's `screen N` serial command (0 splash, 1 usage, 2 detail, 3 system,
+4 activity), then captures. Editing the default boot screen in `main.cpp` and
+reflashing per iteration is no longer necessary.
+
+You usually *need* that argument, because **opening the serial port resets the
+board**, and a board that just reset is showing the splash. USB-serial bridges
+wire DTR/RTS to EN/BOOT for auto-reset and pyserial raises both at open;
+`screenshot.sh` deasserts them before opening, which helps but does not always
+prevent it (a CH343 under macOS's generic CDC-ACM driver still reports
+`rst:0x1 POWERON`). The script therefore waits for the boot banner before
+sending anything. If you open the port yourself, do the same — and set
+`dtr = False` / `rts = False` **before** `open()`, or you may hold the chip in
+reset and conclude the firmware is dead when it is merely being held down.
+
+Note the port name is not stable across drivers: the same CH343 bridge
+enumerates as `/dev/cu.wchusbserial*` under WCH's driver and
+`/dev/cu.usbmodem*` under macOS's built-in CDC-ACM one. `ls /dev/cu.*` rather
+than assuming, and don't read a `usbmodem` name as proof of native USB —
+check the VID/PID (`ioreg -p IOUSB -l`) if it matters.
+
+**A screenshot cannot show every class of display bug.** It snapshots LVGL's
+buffer, so anything downstream of LVGL — RGB-panel scan-out artifacts, bounce
+buffer underruns, tearing, brightness — is invisible to it and needs a human
+looking at the glass. Say so plainly rather than implying a clean PNG proves
+the panel is clean.
 
 ## Critical gotchas
 
@@ -371,6 +418,7 @@ See `~/.claude/projects/.../memory/` files for persistent context (user is an em
 
 ## Recent session highlights
 
+- **Activity heatmap, pace-aware bars, screen-level key deck (2026-08-12).** Added a 7d×24h activity heatmap sourced from local Claude Code transcripts (`daemon/transcript_stats.py`) — the API has no per-hour history — rendered into one LVGL canvas rather than 168 objects. Three lessons from it are worth carrying: (1) the daemon merge was first placed in `poll_active_payload()`, a wrapper the real loop never calls, so a live check of that function "passed" while the wire carried nothing — verify by reading the transmitted payload, not by calling a function; (2) `hm` (heatmap intensity) and `tt` (today's headline) deliberately use *different* token sets, because cache reads dominate real transcripts ~25× and made the headline read 120M where honest new work was 4.1M; (3) `pace_color_for()` had been dead code for a long time — wired only to `lv_arc` gauges while `L.use_arcs` is assigned `false` at exactly one site, so no board ever built one. Also moved the soft key deck from the usage page to the screen, since on a button-less board paging away took the only keyboard with it.
 - **AMOLED-1.8 chime verified on hardware + EXIO2 touch-kill fix (2026-07-13).** The 1.8's `amp_enable` hook drove both GPIO 46 and XCA9554 EXIO2 ("the unused one is harmless") — but pulling EXIO2 low takes the FT3168 off the I2C bus (chip stops ACKing; IDF reports it as `ESP_ERR_INVALID_STATE`, which reads like a driver wedge and cost a long I2S red-herring chase). Amp enable is GPIO 46 only; EXIO2 must stay HIGH. Chime, touch, buttons, and BLE bond persistence all verified on a real 1.8.
 - **Device-abstraction refactor (2026-05-18).** All board-conditional code moved out of shared files into `boards/<name>/` and behind a HAL in `hal/`. ~30 `#ifdef BOARD_*` blocks went to zero. UI is responsive via `compute_layout()` driven by `board_caps()`. New ports add a folder + a PlatformIO env — no shared file edits.
 - Added second board port: Waveshare AMOLED-1.8 (368×448 portrait, SH8601, FT3168, XCA9554 IO expander).
