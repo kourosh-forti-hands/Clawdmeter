@@ -195,17 +195,24 @@ hardware boards, not shared code).
 The LCD-4.3 is the first landscape board and unlocks a richer UI, all gated on
 that runtime predicate (`L.rich_info` in `ui.cpp`) so no other port changes:
 
-- **Four screens, cycled by tapping**: splash → usage → History → System.
-  `SCREEN_LIMITS`/`SCREEN_SYSTEM` fall back to the usage view on boards where
-  they were never built, so narrow boards keep the original two-state toggle.
-- **Usage page**: radial `lv_arc` gauges instead of bars, **tinted by pace**
+- **Split dashboard.** The two gauges stack in the LEFT half and stay on screen
+  permanently; the RIGHT half is a pane that cycles History → System as you
+  tap, so usage is never hidden and detail is one tap away rather than three.
+  The cycle is splash → History → System → splash; `SCREEN_USAGE` is never a
+  stop on these boards (the gauges are always up), though it remains the normal
+  screen everywhere else. `usage_compute_slots()` returns `pane_x`/`pane_w` for
+  that right half and guarantees it cannot overlap the panels.
+- Panels are wide and short here (372x157), so each dial sits on the LEFT of its
+  panel with the caption, reset and pace text beside it — the opposite of the
+  tall full-width panels on other boards, and the reason the text column fits.
+- **Gauges**: radial `lv_arc` instead of bars, **tinted by pace**
   (`pace_color_for()`) rather than absolute level — 40% used is fine 90% into a
   window and alarming 10% in. The percentage and the pace verdict live *inside*
   the ring; the percentage must be a CHILD of the arc, since aligning a sibling
   computes coordinates before LVGL lays the arc out and clips the digits.
-- **History page**: an `lv_chart` in shift mode owns the ring buffer, one point
+- **History pane**: an `lv_chart` in shift mode owns the ring buffer, one point
   per payload, backed by `history_store` so it survives reboots.
-- **System page**: board, resolution, uptime, free heap/PSRAM, link MAC, bond
+- **System pane**: board, resolution, uptime, free heap/PSRAM, link MAC, bond
   state, data age, build stamp.
 - **Five-key HID deck** (`SOFT_KEYS` in `ui.cpp`), built when
   `board_caps().button_count == 0`: TALK (Space, held for PTT), ESC, ENTER, UP,

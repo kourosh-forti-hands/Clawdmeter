@@ -215,22 +215,30 @@ static void compute_layout(const BoardCaps& c) {
         // Gauge centred in the panel with its text stacked underneath. Beside
         // the dial does not work at this panel width — "Under pace - 63% of 7d
         // gone" is wider than the 200 px that would be left over.
-        // A static word should not be the biggest thing on a data display:
-        // the title drops two steps so the gauges carry the visual weight,
-        // which also buys back 30 px of height for the panels.
+        // Split dashboard: the two gauges stack in the left half and stay put,
+        // while the right half cycles History/System. Usage is therefore never
+        // off-screen and detail is one tap away instead of three.
+        //
+        // Vertical budget: title 18..50, panes 60..390, buttons 400..456.
+        // 330 px of pane height holds two panels plus a gap: (330-16)/2 = 157.
         L.title_font    = &font_tiempos_34;
         L.title_y       = 18;
-        L.content_y     = 68;
-        L.usage_panel_h = 258;
-        L.arc_size      = 170;       // the dial is the hero, not a decoration
-        L.pct_font      = &font_tiempos_56;
-        L.usage_reset_y = 202;       // tucked under the gauge, not floating
-        // 154 px sit below the panels: status (30) + buttons (56) leaves 68
-        // for three gaps, so ~23 each rather than 12/34/22.
-        L.anim_y        = -101;
+        L.content_y     = 60;
+        L.usage_panel_h = 157;
+        L.usage_panel_gap = 16;
+        // Panels are now wide and short (372x157), so the dial sits on the
+        // LEFT of each with its text beside it — the opposite arrangement from
+        // the tall full-width panels, and the reason 246 px of text column now
+        // fits where it didn't before.
+        L.arc_size      = 108;
+        L.pct_font      = &font_styrene_28;
+        L.text_x        = 124;       // right of the dial, inside the panel
+        L.usage_reset_y = 58;
+        L.detail_y      = 92;
+        L.anim_y        = 0;         // no status line: the panes own the space
         L.detail_font   = &font_styrene_20;
         L.footer_font   = &font_styrene_16;
-        L.footer_y      = 0;         // footer suppressed; System page carries it
+        L.footer_y      = 0;         // footer suppressed; System pane carries it
     }
 
     // Panel placement is derived, not per-breakpoint: every existing board
@@ -452,10 +460,10 @@ static void format_pace_detail(float used_pct, int remaining_mins, int window_mi
     else if (window_mins % 60 == 0) snprintf(wlabel, sizeof(wlabel), "%dh", window_mins / 60);
     else                            snprintf(wlabel, sizeof(wlabel), "%dm", window_mins);
 
-    // Inside a dial there is only room for the verdict; the elapsed figure it
-    // is derived from lives on the History page beside burn rate.
-    if (L.rich_info) snprintf(buf, len, "#%s %s#", hex, verdict);
-    else             snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
+    // The verdict now sits in the text column beside the dial, which has room
+    // for the elapsed figure it is derived from — so every board prints the
+    // full sentence again.
+    snprintf(buf, len, "#%s %s# - %d%% of %s gone", hex, verdict, elapsed_pct, wlabel);
 }
 
 // Gauge tint by pace rather than absolute level. Window length comes from the
@@ -558,9 +566,8 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
 
 
     *out_pill = make_pill(panel, pill_text);
-    // Centred caption above the dial on rich boards — top-right would sit on
-    // top of a centre-anchored gauge.
-    if (L.rich_info) lv_obj_align(*out_pill, LV_ALIGN_TOP_MID, 0, 2);
+    // Caption heads the text column beside the dial on rich boards.
+    if (L.rich_info) lv_obj_set_pos(*out_pill, L.text_x, 4);
     else             lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
     if (L.rich_info) {
@@ -570,7 +577,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
         // The bar is not created at all here, so every bar call site is guarded.
         lv_obj_t* arc = lv_arc_create(panel);
         lv_obj_set_size(arc, L.arc_size, L.arc_size);
-        lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 32);   // below the caption
+        lv_obj_align(arc, LV_ALIGN_LEFT_MID, 0, 0);   // dial on the left
         lv_arc_set_range(arc, 0, 100);
         lv_arc_set_value(arc, 0);
         lv_arc_set_bg_angles(arc, 135, 45);   // 270-degree sweep, gap at the bottom
@@ -589,7 +596,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
         lv_label_set_text(*out_pct, "--%");
         lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
         lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
-        lv_obj_align(*out_pct, LV_ALIGN_CENTER, 0, -14);   // room for the verdict below
+        lv_obj_center(*out_pct);   // the dial is small now; the number fills it
 
         *out_bar = nullptr;
         *out_arc = arc;
@@ -608,7 +615,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, int x, int y, int w,
     lv_label_set_text(*out_reset, "---");
     lv_obj_set_style_text_font(*out_reset, L.rich_info ? L.detail_font : L.reset_font, 0);
     lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
-    if (L.rich_info) lv_obj_align(*out_reset, LV_ALIGN_TOP_MID, 0, L.usage_reset_y);
+    if (L.rich_info) lv_obj_set_pos(*out_reset, L.text_x, L.usage_reset_y);
     else             lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
 
     return panel;
@@ -742,9 +749,13 @@ static lv_obj_t* make_soft_button(lv_obj_t* parent, const char* text,
 // their navigation stays splash<->usage.
 
 static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
+    // A "page" is really the right-hand pane of the split dashboard: it
+    // occupies the free half beside the gauges, which stay visible underneath
+    // it on the left. Geometry comes from usage_compute_slots() so the pane can
+    // never overlap the panels.
     lv_obj_t* page = lv_obj_create(scr);
-    lv_obj_set_size(page, L.scr_w, L.scr_h);
-    lv_obj_set_pos(page, 0, 0);
+    lv_obj_set_size(page, L.slots.pane_w, L.scr_h - L.content_y - 90);
+    lv_obj_set_pos(page, L.slots.pane_x, L.content_y);
     lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
@@ -759,17 +770,16 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
 
     lv_obj_t* t = lv_label_create(page);
     lv_label_set_text(t, title);
-    lv_obj_set_style_text_font(t, L.title_font, 0);
+    lv_obj_set_style_text_font(t, &font_styrene_24, 0);
     lv_obj_set_style_text_color(t, COL_TEXT, 0);
-    lv_obj_align(t, LV_ALIGN_TOP_MID, L.title_nudge, L.title_y);
+    lv_obj_set_pos(t, 0, 0);
 
-    // Two columns; rows fill the left column first, then the right.
-    // PAGE_TOP is independent of the usage page's content_y — that value is
-    // tuned around the gauges and sits high enough to clip this title.
-    const int16_t col_w   = (L.scr_w - 2 * L.margin - L.usage_panel_gap) / 2;
-    const int16_t row_h   = 34;
-    const int16_t rows_y  = PAGE_TOP;
-    const int16_t per_col = (PAGE_ROWS + 1) / 2;
+    // Single column: the pane is only ~372 px wide, so two columns of
+    // "label value" would truncate the values that made the pane worth having.
+    const int16_t col_w   = L.slots.pane_w;
+    const int16_t row_h   = 25;
+    const int16_t rows_y  = 36;
+    const int16_t per_col = PAGE_ROWS;
     for (int i = 0; i < PAGE_ROWS; ++i) {
         lv_obj_t* r = lv_label_create(page);
         lv_label_set_recolor(r, true);
@@ -779,10 +789,7 @@ static lv_obj_t* make_page(lv_obj_t* scr, const char* title, lv_obj_t** rows) {
         // the panel edge at 20 px.
         lv_obj_set_style_text_font(r, &font_styrene_16, 0);
         lv_obj_set_style_text_color(r, COL_DIM, 0);
-        const bool right = (i >= per_col);
-        const int16_t x = L.margin + (right ? (col_w + L.usage_panel_gap) : 0);
-        const int16_t y = rows_y + (int16_t)((right ? i - per_col : i) * row_h);
-        lv_obj_set_pos(r, x, y);
+        lv_obj_set_pos(r, 0, (int16_t)(rows_y + i * row_h));
         rows[i] = r;
     }
     return page;
@@ -864,19 +871,19 @@ static void init_usage_screen(lv_obj_t* scr) {
         // The pace verdict lives INSIDE the dial, under the percentage. The
         // gauge then labels itself — number, verdict and colour in one glance —
         // instead of competing with a caption line underneath it.
-        lbl_session_detail = lv_label_create(arc_session);
+        lbl_session_detail = lv_label_create(panel_session);
         lv_label_set_recolor(lbl_session_detail, true);
         lv_label_set_text(lbl_session_detail, "");
         lv_obj_set_style_text_font(lbl_session_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_session_detail, COL_DIM, 0);
-        lv_obj_align(lbl_session_detail, LV_ALIGN_CENTER, 0, 36);
+        lv_obj_set_pos(lbl_session_detail, L.text_x, L.detail_y);
 
-        lbl_weekly_detail = lv_label_create(arc_weekly);
+        lbl_weekly_detail = lv_label_create(panel_weekly);
         lv_label_set_recolor(lbl_weekly_detail, true);
         lv_label_set_text(lbl_weekly_detail, "");
         lv_obj_set_style_text_font(lbl_weekly_detail, &font_styrene_16, 0);
         lv_obj_set_style_text_color(lbl_weekly_detail, COL_DIM, 0);
-        lv_obj_align(lbl_weekly_detail, LV_ALIGN_CENTER, 0, 36);
+        lv_obj_set_pos(lbl_weekly_detail, L.text_x, L.detail_y);
 
         // Footer strip: account tier, API status, and data freshness. Lives on
         // usage_group so it hides with the panels when the link drops — stale
@@ -907,6 +914,10 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_anim, L.anim_font, 0);
     lv_obj_set_style_text_color(lbl_anim, COL_ACCENT, 0);
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+    // The split dashboard has no spare row for the animated status line: the
+    // panes reach the button deck. Hidden rather than deleted so every
+    // ui_tick_anim call site stays valid and narrow boards keep it.
+    if (L.rich_info) lv_obj_add_flag(lbl_anim, LV_OBJ_FLAG_HIDDEN);
 
     // Attached to usage_container rather than usage_group so they stay
     // visible across the pairing / idle / usage view states — the HID link is
@@ -968,8 +979,8 @@ void ui_init(void) {
         // are; the shape tells you how you got there and where it's going,
         // which is the thing a single number genuinely cannot show.
         hist_chart = lv_chart_create(limits_container);
-        lv_obj_set_size(hist_chart, L.scr_w - 2 * L.margin, 200);
-        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, PAGE_TOP);
+        lv_obj_set_size(hist_chart, L.slots.pane_w - 8, 150);
+        lv_obj_align(hist_chart, LV_ALIGN_TOP_MID, 0, 36);
         lv_chart_set_type(hist_chart, LV_CHART_TYPE_LINE);
         lv_chart_set_point_count(hist_chart, HIST_POINTS);
         lv_chart_set_range(hist_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
@@ -1009,12 +1020,9 @@ void ui_init(void) {
         // The chart takes the space make_page gave the rows, so re-lay the
         // first four beneath it (2x2) and hide the rest. Four is deliberate:
         // these are the figures that say something the chart doesn't.
-        const int16_t half = (L.scr_w - 2 * L.margin) / 2;
         for (int i = 0; i < PAGE_ROWS; ++i) {
             if (i < 4) {
-                lv_obj_set_pos(limits_rows[i],
-                               L.margin + (i >= 2 ? half : 0),
-                               PAGE_TOP + 216 + (i % 2) * 34);
+                lv_obj_set_pos(limits_rows[i], 0, (int16_t)(196 + i * 25));
             } else {
                 lv_obj_add_flag(limits_rows[i], LV_OBJ_FLAG_HIDDEN);
             }
@@ -1274,8 +1282,11 @@ static void refresh_pages(void) {
     set_row(system_rows[7], "Bonded", ble_has_bonds() ? "yes" : "no");
     set_row(system_rows[8], "Name", ble_get_device_name());
 
-    snprintf(v, sizeof(v), "%d of %d", (int)current_screen + 1, (int)SCREEN_COUNT);
-    set_row(system_rows[9], "Page", v);
+    // Reachable states, not the enum size: the split dashboard cycles
+    // splash -> History -> System, so SCREEN_USAGE is never a stop here.
+    set_row(system_rows[9], "Pane",
+            current_screen == SCREEN_SYSTEM ? "System (tap to cycle)"
+                                            : "History (tap to cycle)");
 
     snprintf(v, sizeof(v), "%d buttons", (int)c.button_count);
     set_row(system_rows[10], "Input", v);
@@ -1310,18 +1321,22 @@ static void update_view_state(void) {
 }
 
 void ui_tick_anim(void) {
-    // The diagnostic pages tick on their own — uptime, data age and the
-    // projection have to keep moving between the daemon's 60s payloads.
-    if (current_screen == SCREEN_LIMITS || current_screen == SCREEN_SYSTEM) {
+    // Every dashboard state shows the gauges, so they all need the usage
+    // animations AND the pane refresh — uptime, data age and the projection
+    // have to keep moving between the daemon's 60s payloads.
+    const bool dashboard = (current_screen == SCREEN_USAGE ||
+                            current_screen == SCREEN_LIMITS ||
+                            current_screen == SCREEN_SYSTEM);
+    if (!dashboard) return;
+
+    if (limits_container) {
         static uint32_t pages_last_s = 0xFFFFFFFF;
         const uint32_t s = lv_tick_get() / 1000;
         if (s != pages_last_s) {
             pages_last_s = s;
             refresh_pages();
         }
-        return;
     }
-    if (current_screen != SCREEN_USAGE) return;
     update_view_state();
     if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
 
@@ -1413,9 +1428,11 @@ static void global_click_cb(lv_event_t* e) {
         else                                  ui_show_screen(SCREEN_SPLASH);
         return;
     }
+    // The gauges are always on screen in every dashboard state, so there is no
+    // separate "usage only" stop in the cycle — tapping just swaps the pane
+    // beside them, then returns to the splash.
     switch (current_screen) {
-    case SCREEN_SPLASH: ui_show_screen(SCREEN_USAGE);  break;
-    case SCREEN_USAGE:  ui_show_screen(SCREEN_LIMITS); break;
+    case SCREEN_SPLASH: ui_show_screen(SCREEN_LIMITS); break;
     case SCREEN_LIMITS: ui_show_screen(SCREEN_SYSTEM); break;
     default:            ui_show_screen(SCREEN_SPLASH); break;
     }
@@ -1428,7 +1445,12 @@ void ui_show_screen(screen_t screen) {
         screen = SCREEN_USAGE;
     }
 
-    lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    // On split boards the gauges stay on screen for every dashboard state;
+    // only the right-hand pane changes.
+    const bool dashboard = (screen == SCREEN_USAGE || screen == SCREEN_LIMITS ||
+                            screen == SCREEN_SYSTEM);
+    if (dashboard && L.rich_info) lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    else                          lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (limits_container) lv_obj_add_flag(limits_container, LV_OBJ_FLAG_HIDDEN);
     if (system_container) lv_obj_add_flag(system_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();

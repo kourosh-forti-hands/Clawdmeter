@@ -20,27 +20,35 @@ typedef struct {
     int16_t p1_x, p1_y;   // first panel (session / "Current")
     int16_t p2_x, p2_y;   // second panel (weekly)
     int16_t panel_w;      // width shared by both panels
-    bool    two_col;      // true when placed side by side
+    bool    wide_split;   // true on wide landscape: panels occupy the LEFT half
+    int16_t pane_x;       // left edge of the free right-hand pane (wide_split)
+    int16_t pane_w;       // width of that pane; 0 when there isn't one
 } UsageSlots;
 
 static inline UsageSlots usage_compute_slots(int16_t scr_w, int16_t scr_h,
                                              int16_t margin, int16_t content_y,
                                              int16_t panel_h, int16_t gap) {
     UsageSlots s;
-    s.two_col = (scr_w >= USAGE_TWO_COL_MIN_W) && (scr_w > scr_h);
+    s.wide_split = (scr_w >= USAGE_TWO_COL_MIN_W) && (scr_w > scr_h);
 
-    if (s.two_col) {
-        s.panel_w = (int16_t)((scr_w - 2 * margin - gap) / 2);
-        s.p1_x = margin;
-        s.p1_y = content_y;
-        s.p2_x = (int16_t)(margin + s.panel_w + gap);
-        s.p2_y = content_y;
+    // Both panels always stack vertically. What a wide landscape screen buys
+    // is not a second panel column but a second *region*: the panels take the
+    // left half and the right half is freed for a pane that cycles through
+    // History/System, so usage is never off-screen and detail is one tap away
+    // instead of three.
+    s.panel_w = s.wide_split ? (int16_t)((scr_w - 2 * margin - gap) / 2)
+                             : (int16_t)(scr_w - 2 * margin);
+    s.p1_x = margin;
+    s.p1_y = content_y;
+    s.p2_x = margin;
+    s.p2_y = (int16_t)(content_y + panel_h + gap);
+
+    if (s.wide_split) {
+        s.pane_x = (int16_t)(margin + s.panel_w + gap);
+        s.pane_w = (int16_t)(scr_w - s.pane_x - margin);
     } else {
-        s.panel_w = (int16_t)(scr_w - 2 * margin);
-        s.p1_x = margin;
-        s.p1_y = content_y;
-        s.p2_x = margin;
-        s.p2_y = (int16_t)(content_y + panel_h + gap);
+        s.pane_x = 0;
+        s.pane_w = 0;
     }
     return s;
 }
