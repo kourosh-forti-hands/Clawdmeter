@@ -64,13 +64,29 @@
 // the panel's timing from that contention and the animation becomes smooth —
 // verified by A/B on real hardware, 0 vs the value below.
 //
-// 10 lines * 800 px = 16 KB per buffer, 32 KB of internal SRAM total.
-// 20 lines, not 10: artifacts appeared along the LEFT edge, which is the
-// signature of the bounce buffer being refilled too late — the peripheral
-// reads the start of each scanline before the DMA has delivered it. More
-// headroom per refill is the first remedy; lowering LCD_PREFER_SPEED is
-// the second.
-#define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 20)
+// Sized in whole lines, and the line count must divide 480 evenly (the IDF
+// driver requires the framebuffer to be a whole number of bounce buffers):
+// 10, 20, 30 and 40 are all legal; 25 is not.
+//
+// 10 -> 20 lines removed heavy left-edge artifacting; 20 -> 30 chases the
+// residue. The left edge is the tell: the peripheral reads the start of a
+// scanline before the refill has delivered it.
+//
+// Why MORE headroom rather than a slower LCD_PREFER_SPEED: with two bounce
+// buffers the refill budget for one buffer is exactly the drain time of the
+// other, so that ratio does not change with buffer size. Growing the buffer
+// therefore buys tolerance for *jitter* — one-off stalls — not for a
+// sustained bandwidth shortfall. Jitter is what we have. Arduino's prebuilt
+// IDF libs ship with CONFIG_LCD_RGB_ISR_IRAM_SAFE and CONFIG_GDMA_ISR_IRAM_SAFE
+// unset, so the refill ISR runs from flash and any flash cache miss stalls
+// it mid-scanline. Flash and PSRAM share SPI0 on the ESP32-S3, so reading
+// the ~400 KB of splash animation rodata contends with scan-out directly.
+//
+// Lowering LCD_PREFER_SPEED is the remaining lever and the one that widens
+// the *sustained* margin, but it costs refresh rate: the frame is
+// 976 x 528 = 515,328 pixel clocks, so 16 MHz = 31 Hz, 14 MHz = 27 Hz,
+// 12 MHz = 23 Hz. Spend that only if headroom alone doesn't settle it.
+#define LCD_BOUNCE_BUF_PX    (LCD_WIDTH * 30)
 
 // ---- I2C bus (CH422G expander + GT911 touch) ----
 #define IIC_SDA              8
