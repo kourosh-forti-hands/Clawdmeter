@@ -440,12 +440,6 @@ static const char* const anim_messages[] = {
 };
 #define ANIM_MSG_COUNT (sizeof(anim_messages) / sizeof(anim_messages[0]))
 
-static lv_color_t pct_color(float pct) {
-    if (pct >= 80.0f) return COL_RED;
-    if (pct >= 50.0f) return COL_AMBER;
-    return COL_GREEN;
-}
-
 static void format_reset_time(int mins, char* buf, size_t len) {
     if (mins < 0) {
         snprintf(buf, len, "---");
@@ -1186,7 +1180,14 @@ void ui_update(const UsageData* data) {
 
     if (bar_session) {
         lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
-        lv_obj_set_style_bg_color(bar_session, pct_color(data->session_pct), LV_PART_INDICATOR);
+        // Pace, not absolute level — same rule the arc below uses. A bar that
+        // colours on the raw percentage answers "how much have I used", which
+        // the number beside it already says; colouring on pace answers "am I
+        // going to run out", which nothing else on this screen tells you.
+        lv_obj_set_style_bg_color(bar_session,
+            pace_color_for(data->session_pct, data->session_reset_mins,
+                           data->session_window_mins),
+            LV_PART_INDICATOR);
     }
     if (arc_session) {
         lv_arc_set_value(arc_session, s_pct);
@@ -1216,7 +1217,10 @@ void ui_update(const UsageData* data) {
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", w_pct);
         if (bar_weekly) {
             lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
-            lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(bar_weekly,
+                pace_color_for(data->weekly_pct, data->weekly_reset_mins,
+                               data->weekly_window_mins),
+                LV_PART_INDICATOR);
         }
         if (arc_weekly) {
             lv_arc_set_value(arc_weekly, w_pct);
