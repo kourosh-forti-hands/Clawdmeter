@@ -24,6 +24,15 @@ import httpx
 from bleak import BleakClient
 from bleak.exc import BleakError
 
+try:
+    # Normal case: imported as part of the `daemon` package (tests, `-m daemon...`).
+    from . import transcript_stats
+except ImportError:
+    # The macOS LaunchAgent (install-mac.sh) runs this file directly as a
+    # script (`python3 .../daemon/claude_usage_daemon.py`), which has no
+    # parent package -- the script's own directory is on sys.path instead.
+    import transcript_stats
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
@@ -665,14 +674,24 @@ async def poll_active(selector: PlanSelector = _SELECTOR) -> tuple[dict | None, 
     active = selector.choose(sessions)
     if len(dirs) > 1:
         log(f"Active plan: {active} (s={sessions[active]})")
-    return payloads[active], False
+    payload = payloads[active]
+    # Merged here (not in poll_active_payload) so EVERY caller gets it,
+    # including the daemon's real loop in connect_and_run(), which calls
+    # poll_active() directly for the `dead` flag and never goes through the
+    # poll_active_payload() wrapper. transcript_stats does blocking file I/O
+    # (scans ~/.claude/projects); run it off-thread so a cold scan can never
+    # stall the event loop. It's internally rate-limited/cached, so most
+    # calls return instantly.
+    payload.update(await asyncio.to_thread(transcript_stats.activity_fields))
+    return payload, False
 
 
 async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None:
     """The active plan's payload, or None when no dir yields one this cycle.
 
     Thin wrapper over :func:`poll_active` for callers that don't need the
-    all-dead flag.
+    all-dead flag. activity_fields() is merged inside poll_active() itself,
+    so this wrapper gets it for free with no separate call.
     """
     payload, _dead = await poll_active(selector)
     return payload
