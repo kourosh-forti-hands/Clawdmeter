@@ -11,6 +11,7 @@ enum screen_t {
     // collapses to splash<->usage exactly as before.
     SCREEN_LIMITS,   // per-window deep dive: burn rate, projection, overage
     SCREEN_SYSTEM,   // device, link and daemon diagnostics
+    SCREEN_ACTIVITY, // 7d x 24h heatmap from local session transcripts
     SCREEN_COUNT,
 };
 

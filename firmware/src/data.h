@@ -15,6 +15,16 @@ struct UsageData {
     char overage[12];        // overage status ("rejected"/"allowed"), "" if absent
     char overage_reason[24]; // why overage is unavailable, "" if absent
     int  fallback_pct;       // fallback percentage, -1 when not reported
+
+    // ---- Activity heatmap (from local session transcripts, not the API) ----
+    // 7 days x 24 local hours, row-major, oldest day first. Each cell is that
+    // hour's token volume normalised 0..9 against the busiest cell. All zero
+    // until the daemon sends one.
+    uint8_t heat[7 * 24];
+    bool    heat_valid;
+    int     heat_first_weekday;  // 0 = Monday, weekday of the FIRST row
+    int     tokens_today_k;      // today's tokens, in thousands
+    int     sessions_today;      // distinct sessions active today
     bool chime;              // play the session-reset chime; false unless daemon opts in
     bool enterprise;         // true = Enterprise spending-limit account
     int time_pct;            // 0-100: fraction of billing period elapsed (Enterprise)

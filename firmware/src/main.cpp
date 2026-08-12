@@ -123,6 +123,22 @@ static bool parse_json(const char* json, UsageData* out) {
     strlcpy(out->overage,        doc["ov"]  | "", sizeof(out->overage));
     strlcpy(out->overage_reason, doc["ovr"] | "", sizeof(out->overage_reason));
     out->fallback_pct = doc["fb"] | -1;
+
+    // Activity heatmap: 168 chars of '0'..'9'. Anything shorter or malformed
+    // leaves heat_valid false and the UI shows "no activity data" rather than
+    // rendering a partially-filled grid as though it were real.
+    out->heat_valid = false;
+    const char* hm = doc["hm"] | "";
+    if (hm && strlen(hm) == sizeof(out->heat)) {
+        for (size_t i = 0; i < sizeof(out->heat); ++i) {
+            const char c = hm[i];
+            out->heat[i] = (c >= '0' && c <= '9') ? (uint8_t)(c - '0') : 0;
+        }
+        out->heat_valid = true;
+    }
+    out->heat_first_weekday = doc["hd"]  | 0;
+    out->tokens_today_k     = doc["tt"]  | 0;
+    out->sessions_today     = doc["tsn"] | 0;
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
     out->enterprise = (strcmp(acct, "ent") == 0);

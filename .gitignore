@@ -25,3 +25,7 @@ firmware/test/**/t
 # Hook/session log dirs (never source)
 logs/
 **/logs/
+
+# MCP server artifacts (Chrome DevTools log, Serena cache)
+debug.log
+.serena/

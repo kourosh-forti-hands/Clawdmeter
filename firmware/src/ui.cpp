@@ -5,7 +5,8 @@
 #include <lvgl.h>
 #include <time.h>
 #include <Arduino.h>           // millis() for the System page's uptime
-#include <esp_heap_caps.h>     // free heap / PSRAM for the System page
+#include <esp_heap_caps.h>     // free heap / PSRAM, heatmap canvas buffer
+#include <string.h>
 #include "logo.h"
 #include "clawd_still.h"
 #include "icons.h"
@@ -42,6 +43,9 @@ struct Layout {
     // the extra text would crowd the layout.
     bool    rich_info;
     bool    use_arcs;                // radial gauges instead of bars
+    int16_t panel_margin;            // side margin for the panel column
+                                     // (wider than L.margin to stop the
+                                     //  official layout stretching)
     int16_t detail_y;                // y offset INSIDE each usage panel
     int16_t footer_y;                // absolute y of the footer status strip
     int16_t arc_size;                // radial gauge diameter (rich_info only)
@@ -101,6 +105,7 @@ static void compute_layout(const BoardCaps& c) {
     L.scr_w = c.width;
     L.scr_h = c.height;
     L.margin = 20;
+    L.panel_margin = 0;   // 0 = follow L.margin unless a breakpoint overrides
     L.title_y = 30;
 
     // Values shared by the two original breakpoints; the small branch below
@@ -216,25 +221,29 @@ static void compute_layout(const BoardCaps& c) {
         // Gauge centred in the panel with its text stacked underneath. Beside
         // the dial does not work at this panel width — "Under pace - 63% of 7d
         // gone" is wider than the 200 px that would be left over.
-        // Canonical Clawdmeter layout (screenshots/usage.png), scaled to
-        // 800x480: mascot top-left, clock centred, two stacked full-width
-        // panels each with a big percentage, pill, bar and reset line, status
-        // line beneath. The extra analysis lives one tap away rather than
-        // crowding the screen you actually glance at.
+        // Canonical Clawdmeter layout (screenshots/usage.png). The design is
+        // proportioned for a square panel — its panels are 440x150, about
+        // 2.9:1. Spanning the full 800 px here would make them 760x134, twice
+        // as elongated, which is why the bar looked enormous and the
+        // percentage stranded from its pill. So the content is constrained to
+        // a centred 560 px column and the extra width becomes margin. The key
+        // deck below still spans the full width: it is a keyboard, and wider
+        // targets are easier to hit.
         //
-        // Vertical budget: clock 18..74, panels 84..214 and 230..360,
-        // status ~370..388, keys 404..456.
-        L.content_y       = 84;
-        L.usage_panel_h   = 130;
+        // Vertical budget: clock 18..76, panels 88..222 and 238..372,
+        // status ~380..398, keys 408..464.
+        L.panel_margin    = 120;       // (800 - 560) / 2
+        L.content_y       = 88;
+        L.usage_panel_h   = 134;
         L.usage_panel_gap = 16;
         L.use_arcs        = false;     // official design uses bars
-        // Panel internals compressed to fit 130 px (106 px of content):
-        // pct 0..48, bar 52..72, reset 78..106.
-        L.usage_bar_y     = 52;
+        // Internals fitted to 134 px panels (110 px of content):
+        // pct 0..48, bar 54..74, reset 82..110.
+        L.usage_bar_y     = 54;
         L.bar_h           = 20;
-        L.usage_reset_y   = 78;
+        L.usage_reset_y   = 82;
         L.anim_font       = &font_mono_18;
-        L.anim_y          = -92;
+        L.anim_y          = -82;
         L.detail_font     = &font_styrene_20;
         L.footer_font     = &font_styrene_16;
         L.footer_y        = 0;
@@ -243,7 +252,10 @@ static void compute_layout(const BoardCaps& c) {
     // Panel placement is derived, not per-breakpoint: every existing board
     // stacks, and wide landscape panels (the LCD-4.3) go side by side. Pinned
     // by test/test_usage_layout/.
-    L.slots = usage_compute_slots(L.scr_w, L.scr_h, L.margin, L.content_y,
+    // Panels use their own margin so a wide screen becomes margin rather than
+    // a stretched panel; everything else still uses L.margin.
+    if (L.panel_margin == 0) L.panel_margin = L.margin;
+    L.slots = usage_compute_slots(L.scr_w, L.scr_h, L.panel_margin, L.content_y,
                                   L.usage_panel_h, L.usage_panel_gap);
 
     // Boards with no readable physical button get on-screen HID controls.
@@ -252,10 +264,10 @@ static void compute_layout(const BoardCaps& c) {
     L.soft_buttons = (c.button_count == 0);
     // Five keys across 800 px with 20 px margins: 5*142 + 4*12 = 758.
     L.softbtn_w    = L.rich_info ? 142 : 200;
-    L.softbtn_h    = L.rich_info ? 60 : 72;
+    L.softbtn_h    = L.rich_info ? 56 : 72;
     L.softbtn_gap  = L.rich_info ? 12 : 24;
     // Raised clear of the status line, which sits at anim_y from the bottom.
-    L.softbtn_y    = L.rich_info ? -22 : -68;
+    L.softbtn_y    = L.rich_info ? -16 : -68;
     L.softbtn_font = L.rich_info ? &font_styrene_24 : &font_styrene_28;
 }
 
@@ -297,6 +309,21 @@ static lv_obj_t* arc_session = nullptr;   // radial gauges, rich_info only
 static lv_obj_t* arc_weekly  = nullptr;
 static lv_obj_t* limits_container = nullptr;
 static lv_obj_t* system_container = nullptr;
+
+// ---- Activity heatmap ----
+// 168 cells rendered into ONE canvas rather than 168 LVGL objects: each object
+// costs ~100 bytes plus per-frame layout, and a grid is exactly the case a
+// canvas is for. The buffer lives in PSRAM and is repainted only when a new
+// payload lands.
+#define HEAT_COLS 24
+#define HEAT_ROWS 7
+#define HEAT_CELL 24      // filled square
+#define HEAT_PITCH 28     // cell + gap
+static lv_obj_t*  activity_container = nullptr;
+static lv_obj_t*  heat_canvas = nullptr;
+static uint16_t*  heat_buf = nullptr;
+static lv_obj_t*  lbl_heat_today = nullptr;
+static lv_obj_t*  lbl_heat_days[HEAT_ROWS] = {nullptr};
 // Two columns of key/value rows per page, refreshed in place so the pages cost
 // no allocation after ui_init.
 #define PAGE_ROWS 12
@@ -481,6 +508,7 @@ static lv_color_t pace_color_for(float used_pct, int remaining_mins, int window_
 
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
+static void refresh_activity(void);   // defined with the heatmap renderer below
 
 static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_t* panel = lv_obj_create(parent);
@@ -957,6 +985,58 @@ void ui_init(void) {
     init_usage_screen(scr);
     if (L.rich_info) {
         limits_container = make_page(scr, "Detail", limits_rows);
+
+        // ---- Activity screen ----
+        activity_container = lv_obj_create(scr);
+        lv_obj_set_size(activity_container, L.scr_w, L.scr_h);
+        lv_obj_set_pos(activity_container, 0, 0);
+        lv_obj_set_style_bg_opa(activity_container, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(activity_container, 0, 0);
+        lv_obj_set_style_pad_all(activity_container, 0, 0);
+        lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollbar_mode(activity_container, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_event_cb(activity_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* at = lv_label_create(activity_container);
+        lv_label_set_text(at, "Activity");
+        lv_obj_set_style_text_font(at, &font_tiempos_34, 0);
+        lv_obj_set_style_text_color(at, COL_TEXT, 0);
+        lv_obj_align(at, LV_ALIGN_TOP_MID, 0, 16);
+
+        const int16_t grid_x = 84, grid_y = 96;
+        // Hour ruler every 4 hours — 24 labels would be unreadable at this pitch.
+        for (int h = 0; h < HEAT_COLS; h += 4) {
+            lv_obj_t* hl = lv_label_create(activity_container);
+            char hb[4]; snprintf(hb, sizeof(hb), "%d", h);
+            lv_label_set_text(hl, hb);
+            lv_obj_set_style_text_font(hl, &font_styrene_14, 0);
+            lv_obj_set_style_text_color(hl, COL_DIM, 0);
+            lv_obj_set_pos(hl, grid_x + h * HEAT_PITCH, grid_y - 22);
+        }
+        for (int r = 0; r < HEAT_ROWS; ++r) {
+            lv_obj_t* dl = lv_label_create(activity_container);
+            lv_label_set_text(dl, "");
+            lv_obj_set_style_text_font(dl, &font_styrene_16, 0);
+            lv_obj_set_style_text_color(dl, COL_DIM, 0);
+            lv_obj_set_pos(dl, L.margin, grid_y + r * HEAT_PITCH + 4);
+            lbl_heat_days[r] = dl;
+        }
+
+        const int hb_w = HEAT_COLS * HEAT_PITCH, hb_h = HEAT_ROWS * HEAT_PITCH;
+        heat_buf = (uint16_t*)heap_caps_malloc((size_t)hb_w * hb_h * 2, MALLOC_CAP_SPIRAM);
+        if (heat_buf) {
+            memset(heat_buf, 0, (size_t)hb_w * hb_h * 2);
+            heat_canvas = lv_canvas_create(activity_container);
+            lv_canvas_set_buffer(heat_canvas, heat_buf, hb_w, hb_h, LV_COLOR_FORMAT_RGB565);
+            lv_obj_set_pos(heat_canvas, grid_x, grid_y);
+        }
+
+        lbl_heat_today = lv_label_create(activity_container);
+        lv_label_set_text(lbl_heat_today, "no activity data yet");
+        lv_obj_set_style_text_font(lbl_heat_today, &font_styrene_20, 0);
+        lv_obj_set_style_text_color(lbl_heat_today, COL_DIM, 0);
+        lv_obj_align(lbl_heat_today, LV_ALIGN_TOP_MID, 0, grid_y + hb_h + 24);
         system_container = nullptr;   // merged into the one detail page
 
         // Trend chart above the stat rows. A percentage tells you where you
@@ -1164,6 +1244,7 @@ void ui_update(const UsageData* data) {
         // Two points make a line; below that the chart has nothing to show.
         if (hist_hint && hist_samples >= 2) lv_obj_add_flag(hist_hint, LV_OBJ_FLAG_HIDDEN);
     }
+    refresh_activity();
     s_last_enterprise = data->enterprise;
     strlcpy(s_last_status, data->status, sizeof(s_last_status));
     if (lbl_session_detail && !data->enterprise) {
@@ -1187,6 +1268,59 @@ void ui_update(const UsageData* data) {
         snprintf(buf, sizeof(buf), "%s%s - updated just now",
                  data->enterprise ? "Enterprise - " : "", data->status);
         lv_label_set_text(lbl_footer, buf);
+    }
+}
+
+// Paint one heatmap cell straight into the canvas buffer. Intensity 0..9 is
+// interpolated from the bar track colour to the brand accent, so an idle hour
+// reads as background and a busy one as a solid block.
+static void heat_fill_cell(int col, int row, uint8_t level) {
+    if (!heat_buf) return;
+    const int bw = HEAT_COLS * HEAT_PITCH;
+    const uint16_t lo_r = 0x2a >> 3, lo_g = 0x2a >> 2, lo_b = 0x28 >> 3;   // COL_BAR_BG
+    const uint16_t hi_r = 0xd9 >> 3, hi_g = 0x77 >> 2, hi_b = 0x57 >> 3;   // COL_ACCENT
+    const uint16_t r = (uint16_t)(lo_r + ((hi_r - lo_r) * level) / 9);
+    const uint16_t g = (uint16_t)(lo_g + ((hi_g - lo_g) * level) / 9);
+    const uint16_t b = (uint16_t)(lo_b + ((hi_b - lo_b) * level) / 9);
+    const uint16_t c = (uint16_t)((r << 11) | (g << 5) | b);
+    const int x0 = col * HEAT_PITCH, y0 = row * HEAT_PITCH;
+    for (int y = 0; y < HEAT_CELL; ++y) {
+        uint16_t* p = heat_buf + (size_t)(y0 + y) * bw + x0;
+        for (int x = 0; x < HEAT_CELL; ++x) p[x] = c;
+    }
+}
+
+// Repaint the activity grid from the latest payload.
+static void refresh_activity(void) {
+    if (!heat_canvas) return;
+    static const char* WD[7] = {"Mon","Tue","Wed","Thu","Fri","Sat","Sun"};
+    const UsageData* d = &s_last_data;
+
+    for (int row = 0; row < HEAT_ROWS; ++row) {
+        for (int col = 0; col < HEAT_COLS; ++col) {
+            const uint8_t lvl = d->heat_valid ? d->heat[row * HEAT_COLS + col] : 0;
+            heat_fill_cell(col, row, lvl);
+        }
+        if (lbl_heat_days[row]) {
+            lv_label_set_text(lbl_heat_days[row],
+                              WD[(d->heat_first_weekday + row) % 7]);
+        }
+    }
+    lv_obj_invalidate(heat_canvas);
+
+    if (lbl_heat_today) {
+        char v[64];
+        if (!d->heat_valid) {
+            snprintf(v, sizeof(v), "no activity data yet");
+        } else if (d->tokens_today_k >= 1000) {
+            snprintf(v, sizeof(v), "today  %d.%dM tokens - %d sessions",
+                     d->tokens_today_k / 1000, (d->tokens_today_k % 1000) / 100,
+                     d->sessions_today);
+        } else {
+            snprintf(v, sizeof(v), "today  %dK tokens - %d sessions",
+                     d->tokens_today_k, d->sessions_today);
+        }
+        lv_label_set_text(lbl_heat_today, v);
     }
 }
 
@@ -1294,7 +1428,8 @@ void ui_tick_anim(void) {
     // have to keep moving between the daemon's 60s payloads.
     const bool dashboard = (current_screen == SCREEN_USAGE ||
                             current_screen == SCREEN_LIMITS ||
-                            current_screen == SCREEN_SYSTEM);
+                            current_screen == SCREEN_SYSTEM ||
+                            current_screen == SCREEN_ACTIVITY);
     if (!dashboard) return;
 
     if (limits_container) {
@@ -1401,26 +1536,30 @@ static void global_click_cb(lv_event_t* e) {
     // beside them, then returns to the splash.
     switch (current_screen) {
     case SCREEN_SPLASH: ui_show_screen(SCREEN_USAGE);  break;
-    case SCREEN_USAGE:  ui_show_screen(SCREEN_LIMITS); break;
-    default:            ui_show_screen(SCREEN_SPLASH); break;
+    case SCREEN_USAGE:  ui_show_screen(SCREEN_LIMITS);   break;
+    case SCREEN_LIMITS: ui_show_screen(SCREEN_ACTIVITY); break;
+    default:            ui_show_screen(SCREEN_SPLASH);   break;
     }
 }
 
 void ui_show_screen(screen_t screen) {
     // Requesting a page this board never built (narrow panels) falls back to
     // the usage view rather than showing a blank screen.
-    if ((screen == SCREEN_LIMITS || screen == SCREEN_SYSTEM) && !limits_container) {
+    if ((screen == SCREEN_LIMITS || screen == SCREEN_SYSTEM ||
+         screen == SCREEN_ACTIVITY) && !limits_container) {
         screen = SCREEN_USAGE;
     }
 
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     if (limits_container) lv_obj_add_flag(limits_container, LV_OBJ_FLAG_HIDDEN);
+    if (activity_container) lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_LIMITS:  lv_obj_clear_flag(limits_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_ACTIVITY: lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
     }
 
